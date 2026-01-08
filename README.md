@@ -50,6 +50,7 @@ connect6/
 - NVIDIA GPU（需要 TensorRT 支持）
 - Python 3.8+
 - CMake 和 C++ 编译器
+- **PyTorch GPU 版本**（安装时注意选择与 CUDA 匹配的版本）
 
 ### 安装步骤
 

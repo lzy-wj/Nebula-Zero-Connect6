@@ -23,6 +23,8 @@ TensorRT 需要从 [NVIDIA 官网](https://developer.nvidia.com/tensorrt) 下载
 
 核心 MCTS 引擎是用 C++ 编写的，你需要将其编译为动态链接库才能运行 Python 界面。
 
+> ⚠️ **注意**: 本地客户端的 MCTS 引擎 (`local/mcts/`) 与强化学习模块的 MCTS 引擎 (`reinforcement_learning/core/`) 是**不同的代码**，需要分别编译。即使你已经编译过 RL 模块的引擎，在使用本地客户端前仍需编译此处的引擎。
+
 我们提供了一个跨平台编译脚本 `mcts/compile_dll.py`，支持 Windows 和 Linux。
 
 ### Windows

@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Connect6 AlphaZero Interface</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #f0f0f0; display: flex; justify-content: center; padding: 20px; }
+        #container { display: flex; gap: 20px; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        #canvas-container { position: relative; }
+        canvas { border: 1px solid #333; background: #e3c98d; cursor: crosshair; }
+        #sidebar { width: 300px; display: flex; flex-direction: column; gap: 15px; }
+        .card { background: #f8f9fa; padding: 15px; border-radius: 6px; border-left: 4px solid #4caf50; }
+        h2 { margin-top: 0; color: #333; }
+        .stat { display: flex; justify-content: space-between; margin-bottom: 8px; }
+        .stat label { color: #666; }
+        .stat span { font-weight: bold; }
+        button { padding: 10px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; transition: background 0.2s; }
+        #btn-ai { background: #2196f3; color: white; }
+        #btn-ai:hover { background: #1976d2; }
+        #btn-reset { background: #f44336; color: white; }
+        #btn-reset:hover { background: #d32f2f; }
+        #log { height: 200px; overflow-y: auto; font-family: monospace; font-size: 12px; background: #222; color: #0f0; padding: 10px; border-radius: 4px; }
+        .loader { display: inline-block; width: 12px; height: 12px; border: 2px solid #fff; border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; margin-right: 5px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+<div id="container">
+    <div id="canvas-container">
+        <canvas id="board" width="700" height="700"></canvas>
+    </div>
+    
+    <div id="sidebar">
+        <h2>AlphaZero Dashboard</h2>
+        
+        <div class="card">
+            <div class="stat"><label>Status:</label> <span id="status">Ready</span></div>
+            <div class="stat"><label>Turn:</label> <span id="turn">Black (You)</span></div>
+            <div class="stat"><label>Win Rate:</label> <span id="win-rate">-</span></div>
+            <div class="stat"><label>Last AI Time:</label> <span id="ai-time">-</span></div>
+        </div>
+        
+        <button id="btn-ai" onclick="triggerAI()">🤖 AI Move</button>
+        <button id="btn-reset" onclick="resetGame()">🔄 Reset Game</button>
+        
+        <div id="log"></div>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById('board');
+    const ctx = canvas.getContext('2d');
+    const size = 19;
+    const cellSize = 35; // 700 / 20
+    const margin = 35;
+    
+    let boardState = Array(19).fill().map(() => Array(19).fill(0));
+    let currentPlayer = 1; // 1: Black, -1: White
+    let isThinking = false;
+
+    // Init
+    drawBoard();
+    
+    canvas.addEventListener('mousedown', (e) => {
+        if (isThinking) return;
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left - margin;
+        const y = e.clientY - rect.top - margin;
+        
+        const col = Math.round(x / cellSize);
+        const row = Math.round(y / cellSize);
+        
+        if (row >= 0 && row < 19 && col >= 0 && col < 19) {
+            makeMove(row, col);
+        }
+    });
+
+    function drawBoard() {
+        // Clear
+        ctx.fillStyle = '#e3c98d';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        // Grid
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 1;
+        
+        for (let i = 0; i < size; i++) {
+            ctx.beginPath();
+            ctx.moveTo(margin + i * cellSize, margin);
+            ctx.lineTo(margin + i * cellSize, margin + (size - 1) * cellSize);
+            ctx.stroke();
+            
+            ctx.beginPath();
+            ctx.moveTo(margin, margin + i * cellSize);
+            ctx.lineTo(margin + (size - 1) * cellSize, margin + i * cellSize);
+            ctx.stroke();
+        }
+        
+        // Stars
+        const stars = [3, 9, 15];
+        ctx.fillStyle = '#000';
+        for (let r of stars) {
+            for (let c of stars) {
+                ctx.beginPath();
+                ctx.arc(margin + c * cellSize, margin + r * cellSize, 3, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+        
+        // Stones
+        for (let r = 0; r < size; r++) {
+            for (let c = 0; c < size; c++) {
+                if (boardState[r][c] !== 0) {
+                    drawStone(r, c, boardState[r][c]);
+                }
+            }
+        }
+    }
+    
+    function drawStone(r, c, color) {
+        ctx.beginPath();
+        const cx = margin + c * cellSize;
+        const cy = margin + r * cellSize;
+        
+        ctx.arc(cx, cy, 16, 0, Math.PI * 2);
+        ctx.fillStyle = color === 1 ? '#000' : '#fff';
+        ctx.fill();
+        
+        // Outline for white
+        if (color === -1) {
+            ctx.strokeStyle = '#000';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+        }
+        
+        // Shadow
+        // ctx.shadowBlur = 5;
+        // ctx.shadowColor = "rgba(0,0,0,0.5)";
+    }
+    
+    function log(msg) {
+        const logDiv = document.getElementById('log');
+        logDiv.innerHTML += `<div>> ${msg}</div>`;
+        logDiv.scrollTop = logDiv.scrollHeight;
+    }
+    
+    async function makeMove(r, c) {
+        if (boardState[r][c] !== 0) return;
+        
+        // Optimistic update
+        // boardState[r][c] = currentPlayer;
+        // drawBoard();
+        
+        const res = await fetch('/move', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({r, c})
+        });
+        
+        const data = await res.json();
+        if (data.status === 'ok') {
+            boardState = data.board;
+            currentPlayer = data.current_player;
+            drawBoard();
+            updateStatus();
+            log(`Move: ${String.fromCharCode(65+c)}${19-r}`);
+        } else {
+            log(`Error: ${data.msg}`);
+        }
+    }
+    
+    async function triggerAI() {
+        if (isThinking) return;
+        isThinking = true;
+        document.getElementById('btn-ai').innerHTML = '<div class="loader"></div> Thinking...';
+        document.getElementById('status').innerText = 'AI Thinking...';
+        
+        try {
+            const res = await fetch('/ai_move', {method: 'POST'});
+            const data = await res.json();
+            
+            if (data.status === 'ok') {
+                // Update board manually or fetch state? 
+                // We should fetch state to be safe but AI move returns coords
+                const [r, c] = data.move;
+                boardState[r][c] = (currentPlayer === 1 ? 1 : -1); // Assuming AI plays current
+                
+                // Wait, logic is in backend.
+                // Let's just fetch state to sync
+                await fetchState();
+                
+                document.getElementById('win-rate').innerText = (data.win_rate * 100).toFixed(1) + '%';
+                document.getElementById('ai-time').innerText = data.duration.toFixed(2) + 's';
+                log(`AI Played: ${String.fromCharCode(65+c)}${19-r} (WR: ${(data.win_rate * 100).toFixed(1)}%)`);
+            } else {
+                log('AI Error: ' + data.msg);
+            }
+        } catch (e) {
+            log('Network Error');
+        }
+        
+        isThinking = false;
+        document.getElementById('btn-ai').innerHTML = '🤖 AI Move';
+        updateStatus();
+    }
+    
+    async function resetGame() {
+        await fetch('/reset', {method: 'POST'});
+        log('Game Reset');
+        await fetchState();
+    }
+    
+    async function fetchState() {
+        const res = await fetch('/state');
+        const data = await res.json();
+        boardState = data.board;
+        currentPlayer = data.current_player;
+        drawBoard();
+        updateStatus();
+    }
+    
+    function updateStatus() {
+        const turnStr = currentPlayer === 1 ? 'Black' : 'White';
+        document.getElementById('turn').innerText = turnStr;
+        document.getElementById('status').innerText = 'Waiting for move...';
+    }
+
+</script>
+</body>
+</html>

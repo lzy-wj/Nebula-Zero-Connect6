@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Nebula Zero - Connect6 AI</title>
+    <style>
+        :root {
+            --primary: #2196f3;
+            --primary-dark: #1976d2;
+            --accent: #ff9800;
+            --bg: #f4f7f6;
+            --card-bg: #ffffff;
+            --text: #333333;
+            --sidebar-width: 320px;
+        }
+        
+        body { 
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; 
+            background: var(--bg); 
+            margin: 0; 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            min-height: 100vh;
+            color: var(--text);
+        }
+        
+        #app-container {
+            display: flex;
+            gap: 30px;
+            padding: 20px;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            max-width: 1200px;
+            width: 100%;
+        }
+
+        #canvas-wrapper {
+            position: relative;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        canvas { 
+            background: #e3c98d; 
+            cursor: crosshair; 
+            display: block;
+        }
+
+        #sidebar { 
+            width: var(--sidebar-width); 
+            display: flex; 
+            flex-direction: column; 
+            gap: 15px; 
+            height: 700px;
+            overflow-y: auto;
+            padding-right: 5px;
+        }
+        
+        h1 {
+            font-size: 24px;
+            margin: 0 0 10px 0;
+            color: #2c3e50;
+            border-bottom: 2px solid var(--primary);
+            padding-bottom: 10px;
+        }
+
+        .card { 
+            background: var(--card-bg); 
+            padding: 15px; 
+            border-radius: 8px; 
+            border: 1px solid #eee;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        }
+        
+        .card-header {
+            font-weight: 600;
+            margin-bottom: 10px;
+            color: #555;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .card-header i { color: var(--primary); }
+
+        .stat-row { 
+            display: flex; 
+            justify-content: space-between; 
+            margin-bottom: 8px; 
+            font-size: 14px;
+        }
+        
+        .stat-label { color: #7f8c8d; }
+        .stat-value { font-weight: 700; color: #2c3e50; }
+        
+        .control-group { margin-bottom: 10px; }
+        .control-group label { display: block; font-size: 12px; color: #666; margin-bottom: 4px; }
+        
+        input, select { 
+            width: 100%; 
+            padding: 8px; 
+            border: 1px solid #ddd; 
+            border-radius: 6px; 
+            box-sizing: border-box; 
+            font-size: 13px;
+            transition: border 0.2s;
+        }
+        
+        input:focus, select:focus {
+            border-color: var(--primary);
+            outline: none;
+        }
+        
+        .btn-group { display: flex; gap: 10px; margin-top: 5px; }
+        
+        button { 
+            flex: 1;
+            padding: 12px; 
+            border: none; 
+            border-radius: 6px; 
+            cursor: pointer; 
+            font-weight: 600; 
+            transition: all 0.2s;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        #btn-ai { background: var(--primary); color: white; }
+        #btn-ai:hover { background: var(--primary-dark); transform: translateY(-1px); }
+        #btn-ai:active { transform: translateY(0); }
+        
+        #btn-reset { background: #ff5252; color: white; }
+        #btn-reset:hover { background: #ff1744; }
+
+        #log-container {
+            flex-grow: 1;
+            background: #1e1e1e;
+            color: #00ff9d;
+            padding: 10px;
+            border-radius: 6px;
+            font-family: 'Consolas', monospace;
+            font-size: 11px;
+            overflow-y: auto;
+            min-height: 150px;
+        }
+        
+        .log-entry { margin-bottom: 2px; }
+        .log-time { color: #666; margin-right: 5px; }
+        
+        .debug-item { 
+            display: flex; 
+            justify-content: space-between; 
+            padding: 6px 0; 
+            border-bottom: 1px solid #f0f0f0;
+            font-size: 13px;
+        }
+        .debug-prob { color: var(--primary); font-weight: bold; }
+        .debug-coord { font-family: monospace; background: #eee; padding: 1px 4px; border-radius: 3px;}
+
+        /* Loader */
+        .spinner {
+            width: 16px;
+            height: 16px;
+            border: 2px solid #ffffff;
+            border-top: 2px solid transparent;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+        
+        /* Status Indicators */
+        .status-dot {
+            height: 10px;
+            width: 10px;
+            background-color: #bbb;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 5px;
+        }
+        .status-active { background-color: #4caf50; box-shadow: 0 0 5px #4caf50; }
+        .status-thinking { background-color: #ff9800; animation: pulse 1s infinite; }
+        
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+
+    </style>
+</head>
+<body>
+
+<div id="app-container">
+    <!-- Game Board -->
+    <div id="canvas-wrapper">
+        <canvas id="board" width="760" height="760"></canvas>
+    </div>
+    
+    <!-- Sidebar Controls -->
+    <div id="sidebar">
+        <h1>🌌 Nebula Zero</h1>
+        
+        <!-- Dashboard -->
+        <div class="card">
+            <div class="card-header">📊 Game Stats</div>
+            <div class="stat-row">
+                <span class="stat-label">Status</span>
+                <span class="stat-value">
+                    <span id="status-dot" class="status-dot status-active"></span>
+                    <span id="status-text">Ready</span>
+                </span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">Turn</span>
+                <span class="stat-value" id="turn-text">Black</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">AI Win Rate</span>
+                <span class="stat-value" id="win-rate" style="color: var(--primary);">--</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">Compute Time</span>
+                <span class="stat-value" id="compute-time">--</span>
+            </div>
+        </div>
+
+        <!-- Settings -->
+        <div class="card">
+            <div class="card-header">⚙️ Configuration</div>
+            
+            <div class="control-group">
+                <label>Model Checkpoint</label>
+                <select id="model-select"><option>Loading...</option></select>
+            </div>
+            
+            <div style="display: flex; gap: 10px;">
+                <div class="control-group" style="flex: 1;">
+                    <label>Simulations</label>
+                    <input type="number" id="sims" value="800" min="100" step="100">
+                </div>
+                <div class="control-group" style="flex: 1;">
+                    <label>Temp</label>
+                    <input type="number" id="temp" value="0.1" step="0.1" min="0" max="2">
+                </div>
+            </div>
+        </div>
+
+        <!-- Performance -->
+        <div class="card">
+            <div class="card-header">🚀 Performance Tuning</div>
+            <div style="display: flex; gap: 10px;">
+                <div class="control-group" style="flex: 1;">
+                    <label>Batch Size (GPU)</label>
+                    <input type="number" id="batch-size" value="32" step="8" min="1" max="256">
+                </div>
+                <div class="control-group" style="flex: 1;">
+                    <label>Threads (CPU)</label>
+                    <input type="number" id="threads" value="4" step="1" min="1" max="64">
+                </div>
+            </div>
+            <div style="font-size: 11px; color: #888; margin-top: -5px;">
+                Increase Batch Size for GPU saturation. Increase Threads for CPU usage.
+            </div>
+        </div>
+        
+        <!-- Actions -->
+        <div class="btn-group">
+            <button id="btn-ai" onclick="triggerAI()">
+                <span>🤖 AI Move</span>
+            </button>
+            <button id="btn-reset" onclick="resetGame()">
+                <span>🔄 Reset</span>
+            </button>
+        </div>
+
+        <!-- Thinking / Analysis -->
+        <div class="card" style="flex-grow: 1; display: flex; flex-direction: column;">
+            <div class="card-header">🧠 AI Thoughts</div>
+            <div id="analysis-content" style="flex-grow: 1; overflow-y: auto;">
+                <div style="color:#aaa; text-align:center; padding: 20px;">No analysis yet</div>
+            </div>
+        </div>
+
+        <!-- Log -->
+        <div id="log-container"></div>
+    </div>
+</div>
+
+<script>
+    // Configuration
+    const BOARD_SIZE = 19;
+    const CANVAS_SIZE = 760;
+    const CELL_SIZE = CANVAS_SIZE / (BOARD_SIZE + 1);
+    const MARGIN = CELL_SIZE;
+
+    const canvas = document.getElementById('board');
+    const ctx = canvas.getContext('2d');
+    
+    // State
+    let board = Array(19).fill().map(() => Array(19).fill(0));
+    let currentPlayer = 1; // 1 Black, -1 White
+    let isThinking = false;
+    let gameOver = false;
+    let lastMove = null;
+    let gameId = 0; // Generation counter to invalidate stale AI moves
+
+    // Initialize
+    init();
+
+    function init() {
+        drawBoard();
+        fetchModels();
+        fetchState();
+        
+        // Canvas Events
+        canvas.addEventListener('mousedown', handleClick);
+    }
+
+    // --- Drawing ---
+    function drawBoard() {
+        try {
+            if (!board || !board.length) {
+                log("Error: Board is invalid");
+                return;
+            }
+
+            // Wood Background
+            ctx.fillStyle = '#E3C98D';
+            ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+
+            // Grid Lines
+            ctx.beginPath();
+            ctx.strokeStyle = '#000';
+            ctx.lineWidth = 1;
+            
+            for (let i = 0; i < BOARD_SIZE; i++) {
+                const pos = MARGIN + i * CELL_SIZE;
+                ctx.moveTo(pos, MARGIN);
+                ctx.lineTo(pos, CANVAS_SIZE - MARGIN);
+                ctx.moveTo(MARGIN, pos);
+                ctx.lineTo(CANVAS_SIZE - MARGIN, pos);
+            }
+            ctx.stroke();
+
+            // Star Points
+            const stars = [3, 9, 15];
+            ctx.fillStyle = '#000';
+            for (let r of stars) {
+                for (let c of stars) {
+                    ctx.beginPath();
+                    ctx.arc(MARGIN + c * CELL_SIZE, MARGIN + r * CELL_SIZE, 3, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+            
+            // Stones
+            for (let r = 0; r < BOARD_SIZE; r++) {
+                if (!board[r]) continue;
+                for (let c = 0; c < BOARD_SIZE; c++) {
+                    if (board[r][c] !== 0) {
+                        drawStone(r, c, board[r][c]);
+                    }
+                }
+            }
+
+            // Last Move Marker
+            if (lastMove && lastMove.length === 2) {
+                const [r, c] = lastMove;
+                // Validate r, c
+                if (typeof r === 'number' && typeof c === 'number') {
+                    const x = MARGIN + c * CELL_SIZE;
+                    const y = MARGIN + r * CELL_SIZE;
+                    
+                    ctx.beginPath();
+                    ctx.arc(x, y, 4, 0, Math.PI * 2);
+                    ctx.fillStyle = '#ff0000';
+                    ctx.fill();
+                } else {
+                    log("Invalid lastMove: " + JSON.stringify(lastMove));
+                }
+            }
+        } catch (e) {
+            log("Error in drawBoard: " + e.message);
+            console.error(e);
+        }
+    }
+
+    function drawStone(r, c, color) {
+        const x = MARGIN + c * CELL_SIZE;
+        const y = MARGIN + r * CELL_SIZE;
+        const radius = CELL_SIZE * 0.45;
+
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        
+        // Gradient for 3D effect
+        const grad = ctx.createRadialGradient(x - radius/3, y - radius/3, radius/10, x, y, radius);
+        if (color === 1) {
+            grad.addColorStop(0, '#555');
+            grad.addColorStop(1, '#000');
+        } else {
+            grad.addColorStop(0, '#fff');
+            grad.addColorStop(1, '#ddd');
+        }
+        
+        ctx.fillStyle = grad;
+        ctx.fill();
+        
+        // White stone outline
+        if (color === -1) {
+            ctx.strokeStyle = '#aaa';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+        }
+    }
+
+    // --- Logic ---
+    async function handleClick(e) {
+        if (isThinking || gameOver) return;
+        
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left - MARGIN + CELL_SIZE/2;
+        const y = e.clientY - rect.top - MARGIN + CELL_SIZE/2;
+        
+        const c = Math.floor(x / CELL_SIZE);
+        const r = Math.floor(y / CELL_SIZE);
+        
+        if (r >= 0 && r < BOARD_SIZE && c >= 0 && c < BOARD_SIZE) {
+            if (board[r][c] === 0) {
+                await sendMove(r, c);
+            }
+        }
+    }
+
+    async function sendMove(r, c) {
+        setThinking(true);
+        try {
+            log(`Sending Move: ${r}, ${c}`);
+            const res = await fetch('/move', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({r, c})
+            });
+            const data = await res.json();
+            log(`Response: ${data.status}`);
+            handleResponse(data);
+            if (data.status === 'ok') {
+                lastMove = [r, c];
+                drawBoard(); // Redraw to show last move marker
+            }
+        } catch (e) {
+            logError(e);
+        } finally {
+            setThinking(false);
+        }
+    }
+
+    async function triggerAI() {
+        if (isThinking || gameOver) return;
+        
+        const currentGen = gameId; // Capture current generation
+        
+        setThinking(true, "AI Thinking...");
+        const btn = document.getElementById('btn-ai');
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '<div class="spinner"></div>';
+        
+        try {
+            const payload = {
+                model_path: document.getElementById('model-select').value,
+                sims: parseInt(document.getElementById('sims').value),
+                temp: parseFloat(document.getElementById('temp').value),
+                batch_size: parseInt(document.getElementById('batch-size').value),
+                num_threads: parseInt(document.getElementById('threads').value)
+            };
+
+            const res = await fetch('/ai_move', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            });
+            
+            const data = await res.json();
+            
+            // Check if game was reset while we were thinking
+            if (gameId !== currentGen) {
+                log("AI response ignored (Game Reset)");
+                return;
+            }
+
+            if (data.status === 'ok') {
+                handleResponse(data);
+                updateStats(data);
+                lastMove = data.move; // Highlight AI move
+                drawBoard();
+            } else {
+                log("Error: " + data.msg);
+            }
+        } catch (e) {
+            logError(e);
+        } finally {
+            if (gameId === currentGen) {
+                setThinking(false);
+                btn.innerHTML = originalText;
+            }
+        }
+    }
+
+    async function resetGame() {
+        if (confirm("Reset the game?")) {
+            gameId++; // Invalidate pending AI moves
+            await fetch('/reset', {method: 'POST'});
+            await fetchState();
+            log("Game Reset");
+            gameOver = false;
+            lastMove = null;
+            isThinking = false; // Force reset thinking state
+            
+            // Reset UI components
+            const btn = document.getElementById('btn-ai');
+            btn.innerHTML = '<span>🤖 AI Move</span>';
+            
+            document.getElementById('analysis-content').innerHTML = '<div style="color:#aaa; text-align:center; padding: 20px;">No analysis yet</div>';
+            document.getElementById('win-rate').innerText = "--";
+            document.getElementById('compute-time').innerText = "--";
+            
+            updateUI();
+        }
+    }
+
+    // --- Helpers ---
+    function handleResponse(data) {
+        try {
+            if (data.status === 'ok') {
+                if (!data.board) throw new Error("Missing board data");
+                
+                board = data.board;
+                currentPlayer = data.current_player;
+                gameOver = data.game_over;
+                
+                // Debug: Count stones
+                let stones = 0;
+                if (board && board.length) {
+                    for(let r=0; r<19; r++) {
+                        if (board[r]) {
+                            for(let c=0; c<19; c++) if(board[r][c] !== 0) stones++;
+                        }
+                    }
+                }
+                log(`Board updated. Stones: ${stones}. Next: ${currentPlayer}`);
+                
+                drawBoard();
+                updateUI();
+                
+                if (gameOver) {
+                    const winner = data.winner === 1 ? "Black" : "White";
+                    log(`🏆 GAME OVER! ${winner} Wins!`);
+                    setTimeout(() => alert(`${winner} Wins!`), 100);
+                }
+            } else {
+                log("Server returned status: " + data.status);
+            }
+        } catch (e) {
+            logError(e);
+        }
+    }
+
+    function updateStats(data) {
+        try {
+            if (document.getElementById('win-rate')) {
+                document.getElementById('win-rate').innerText = (data.win_rate * 100).toFixed(1) + "%";
+            }
+            if (document.getElementById('compute-time')) {
+                document.getElementById('compute-time').innerText = data.duration.toFixed(2) + "s";
+            }
+            
+            // Update Thoughts
+            const container = document.getElementById('analysis-content');
+            if (container) {
+                container.innerHTML = '';
+                
+                if (data.debug_moves && Array.isArray(data.debug_moves)) {
+                    data.debug_moves.forEach(m => {
+                        const div = document.createElement('div');
+                        div.className = 'debug-item';
+                        div.innerHTML = `
+                            <span class="debug-coord">${m.coord}</span>
+                            <span class="debug-prob">${(m.prob * 100).toFixed(1)}%</span>
+                        `;
+                        container.appendChild(div);
+                    });
+                }
+            }
+            
+            if (data.move && Array.isArray(data.move) && data.move.length >= 2) {
+                const moveStr = String.fromCharCode(65 + data.move[1]) + (19 - data.move[0]);
+                log(`AI played ${moveStr}`);
+            } else {
+                log("AI played (No move data)");
+            }
+        } catch (e) {
+            log("Error updating stats: " + e.message);
+        }
+    }
+
+    async function fetchState() {
+        const res = await fetch('/state');
+        const data = await res.json();
+        board = data.board;
+        currentPlayer = data.current_player;
+        drawBoard();
+        updateUI();
+    }
+
+    async function fetchModels() {
+        try {
+            const res = await fetch('/models');
+            const data = await res.json();
+            const select = document.getElementById('model-select');
+            select.innerHTML = '';
+            
+            if (data.models && data.models.length) {
+                data.models.forEach(m => {
+                    const opt = document.createElement('option');
+                    opt.value = m.path;
+                    opt.innerText = m.name;
+                    select.appendChild(opt);
+                });
+            } else {
+                const opt = document.createElement('option');
+                opt.value = "";
+                opt.innerText = "Default";
+                select.appendChild(opt);
+            }
+        } catch(e) { console.error(e); }
+    }
+
+    function updateUI() {
+        const statusText = document.getElementById('status-text');
+        const dot = document.getElementById('status-dot');
+        const turnText = document.getElementById('turn-text');
+        
+        if (turnText) {
+             turnText.innerText = currentPlayer === 1 ? "Black ⚫" : "White ⚪";
+        }
+        
+        if (gameOver) {
+            if (statusText) statusText.innerText = "Game Over";
+            if (dot) {
+                dot.className = "status-dot";
+                dot.style.background = "red";
+            }
+        } else {
+            if (statusText) statusText.innerText = "Ready";
+            if (dot) dot.className = "status-dot status-active";
+        }
+    }
+
+    function setThinking(thinking, msg="Thinking...") {
+        isThinking = thinking;
+        const statusText = document.getElementById('status-text');
+        const dot = document.getElementById('status-dot');
+        
+        if (thinking) {
+            statusText.innerText = msg;
+            dot.className = "status-dot status-thinking";
+        } else {
+            updateUI();
+        }
+    }
+
+    function log(msg) {
+        const container = document.getElementById('log-container');
+        const time = new Date().toLocaleTimeString();
+        const div = document.createElement('div');
+        div.className = 'log-entry';
+        div.innerHTML = `<span class="log-time">[${time}]</span> ${msg}`;
+        container.appendChild(div);
+        container.scrollTop = container.scrollHeight;
+    }
+    
+    function logError(e) {
+        console.error(e);
+        log("Error: " + e.message);
+        if (e.stack) {
+            // Extract line number
+            const match = e.stack.match(/:(\d+):\d+/);
+            if (match) log("Line: " + match[1]);
+        }
+    }
+</script>
+
+</body>
+</html>

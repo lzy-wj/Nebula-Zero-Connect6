@@ -1,0 +1,3 @@
+/root/autodl-tmp/connect6/reinforcement_learning/checkpoints/model_gen_16.pth
+/root/autodl-tmp/connect6/reinforcement_learning/checkpoints/model_gen_12.pth
+/root/autodl-tmp/connect6/reinforcement_learning/checkpoints/model_gen_13.pth

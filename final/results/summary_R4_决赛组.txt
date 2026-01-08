@@ -1,0 +1,16 @@
+=== R4_决赛组 成绩单 ===
+
+【排行榜】
+模型                   积分        
+------------------------------
+model_gen_16.pth     2         
+model_gen_13.pth     0         
+model_gen_12.pth     -2        
+
+【详细战绩】
+对局 1: model_gen_16.pth (黑) vs model_gen_12.pth (白) -> model_gen_16.pth 胜
+对局 2: model_gen_16.pth (黑) vs model_gen_13.pth (白) -> model_gen_13.pth 胜
+对局 3: model_gen_12.pth (黑) vs model_gen_16.pth (白) -> model_gen_16.pth 胜
+对局 4: model_gen_12.pth (黑) vs model_gen_13.pth (白) -> model_gen_12.pth 胜
+对局 5: model_gen_13.pth (黑) vs model_gen_16.pth (白) -> model_gen_16.pth 胜
+对局 6: model_gen_13.pth (黑) vs model_gen_12.pth (白) -> model_gen_13.pth 胜

@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# C++ / Build (General)
+*.obj
+*.exe
+*.exp
+*.lib
+
+# Keep compiled MCTS libraries (mcts.dll, libmcts.so)
+# *.dll and *.so are NOT globally excluded
+
+# Models & Data (Too large for git)
+*.pth
+*.engine
+*.onnx
+*.weights
+*.pt
+data/raw/
+data/buffer/
+checkpoints/
+logs/
+swanlog/
+tournament_state.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store

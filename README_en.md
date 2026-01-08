@@ -1,7 +1,7 @@
 # Nebula Zero - Connect6 AI
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![ModelScope](https://img.shields.io/badge/ModelScope-Download-blue)](https://modelscope.cn/models/lzy-wj/NebulaZero)
+[![ModelScope](https://img.shields.io/badge/ModelScope-Download-blue)](https://modelscope.cn/models/Lazyshu/Nebula_Zero_Connect6)
 [中文版 (Chinese Version)](README.md)
 
 **Nebula Zero** represents a state-of-the-art implementation of the AlphaZero algorithm for Connect6 (六子棋). It features specific optimizations for the complex action space of Connect6, including Autoregressive (AR) decomposition and TensorRT acceleration, achieving superhuman performance on consumer-grade hardware.
@@ -42,8 +42,8 @@ connect6/
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/lzy-wj/Nebula-Zero-Connect6-.git
-   cd NebulaZero
+   git clone https://github.com/lzy-wj/Nebula-Zero-Connect6.git
+   cd Nebula-Zero-Connect6
    ```
 
 2. **Install Dependencies**

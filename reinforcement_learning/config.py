@@ -18,9 +18,16 @@ LOG_DIR = os.path.join(BASE_DIR, 'logs')               # 日志和图表
 # ==================================
 # 模型和引擎路径
 # ==================================
-# 初始模型：使用监督学习训练好的模型作为起点
-# 请根据你的实际路径修改，或将模型放到 checkpoints/initial.pth
-INITIAL_MODEL_PTH = os.path.join(CHECKPOINT_DIR, 'initial.pth')
+# 初始模型：优先查找监督学习的输出，否则使用 checkpoints/initial.pth
+_SL_MODEL_PATH = os.path.join(BASE_DIR, '..', 'supervised_learning', 'output', 'checkpoints', 'checkpoint_latest.pth')
+_DEFAULT_INITIAL_PATH = os.path.join(CHECKPOINT_DIR, 'initial.pth')
+
+# 自动选择初始模型路径
+if os.path.exists(_SL_MODEL_PATH):
+    INITIAL_MODEL_PTH = os.path.abspath(_SL_MODEL_PATH)
+else:
+    INITIAL_MODEL_PTH = _DEFAULT_INITIAL_PATH
+
 INITIAL_MODEL_PATH = os.path.join(CHECKPOINT_DIR, 'initial_model.engine')  # 编译后的 TensorRT 引擎
 CURRENT_ENGINE_PATH = os.path.join(CHECKPOINT_DIR, 'current_model.engine') # 当前使用的引擎
 CURRENT_MODEL_PTH = os.path.join(CHECKPOINT_DIR, 'best.pth')               # 当前最佳 PyTorch 模型

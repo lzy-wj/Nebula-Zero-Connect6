@@ -88,10 +88,15 @@ python train.py
 
 ### 强化学习
 
-AlphaZero 自我对弈训练循环。
+AlphaZero 自我对弈训练循环。首次运行需要编译 MCTS 引擎：
 
 ```bash
-cd reinforcement_learning
+# 1. 编译 MCTS 引擎（首次运行必须）
+cd reinforcement_learning/core
+python compile_mcts.py
+
+# 2. 开始训练（会自动查找监督学习的模型作为起点）
+cd ..
 python run_loop.py
 ```
 

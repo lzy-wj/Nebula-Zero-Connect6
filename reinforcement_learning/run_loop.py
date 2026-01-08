@@ -5,6 +5,7 @@ import subprocess
 import shutil
 import glob
 import json
+import signal
 import swanlab
 import config
 import matplotlib.pyplot as plt
@@ -13,6 +14,13 @@ matplotlib.use('Agg') # Non-interactive backend
 
 # Cross-platform Python executable
 PYTHON = sys.executable
+
+# Signal handler for graceful shutdown
+def signal_handler(sig, frame):
+    print("\n⚠️ Ctrl+C detected. Shutting down gracefully...")
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, signal_handler)
 
 def run_command(cmd):
     print(f"Running: {cmd}")

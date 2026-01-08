@@ -8,7 +8,11 @@ import json
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
+import numpy as np
+import torch
+import matplotlib.pyplot as plt
 import seaborn as sns
+import subprocess
 
 # Add paths
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -20,9 +24,12 @@ import config
 # Cross-platform Python executable
 PYTHON = sys.executable
 
-def run_command(cmd):
+def run_command(cmd, env_vars=None):
     print(f"Running: {cmd}")
-    os.system(cmd)
+    env = os.environ.copy()
+    if env_vars:
+        env.update(env_vars)
+    subprocess.check_call(cmd, shell=True, env=env)
 
 def convert_to_engine(pth_path, engine_path, gpu_id):
     """
@@ -37,13 +44,13 @@ def convert_to_engine(pth_path, engine_path, gpu_id):
     # 1. Export ONNX
     onnx_path = engine_path.replace('.engine', '.onnx')
     script_export = os.path.join(config.BASE_DIR, 'pipeline/export_onnx.py')
-    cmd_export = f"CUDA_VISIBLE_DEVICES={gpu_id} \"{PYTHON}\" {script_export} {pth_path} {onnx_path}"
-    run_command(cmd_export)
+    cmd_export = f"\"{PYTHON}\" {script_export} {pth_path} {onnx_path}"
+    run_command(cmd_export, env_vars={'CUDA_VISIBLE_DEVICES': str(gpu_id)})
     
     # 2. Build Engine
     script_build = os.path.join(config.BASE_DIR, 'pipeline/build_engine.py')
-    cmd_build = f"CUDA_VISIBLE_DEVICES={gpu_id} \"{PYTHON}\" {script_build} {onnx_path} {engine_path}"
-    run_command(cmd_build)
+    cmd_build = f"\"{PYTHON}\" {script_build} {onnx_path} {engine_path}"
+    run_command(cmd_build, env_vars={'CUDA_VISIBLE_DEVICES': str(gpu_id)})
     
     # Cleanup ONNX
     if os.path.exists(onnx_path):

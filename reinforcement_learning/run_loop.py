@@ -22,12 +22,14 @@ def signal_handler(sig, frame):
 
 signal.signal(signal.SIGINT, signal_handler)
 
-def run_command(cmd):
+def run_command(cmd, env_vars=None):
     print(f"Running: {cmd}")
     try:
         # Force unbuffered output so logs show up immediately in training.log
         env = os.environ.copy()
         env['PYTHONUNBUFFERED'] = '1'
+        if env_vars:
+            env.update(env_vars)
         subprocess.check_call(cmd, shell=True, env=env)
     except subprocess.CalledProcessError as e:
         print(f"Error running command: {cmd}")
@@ -480,8 +482,8 @@ def main():
         # We pass CUDA_VISIBLE_DEVICES explicitly to the training command
         train_gpu = getattr(config, 'TRAINING_GPU', '0')
         script_path = os.path.join(config.BASE_DIR, 'pipeline/train.py')
-        cmd_train = f"CUDA_VISIBLE_DEVICES={train_gpu} \"{PYTHON}\" {script_path} --resume {resume_path} --data {buffer_csv} --run_name gen_{generation} --epochs {current_epochs}"
-        run_command(cmd_train)
+        cmd_train = f"\"{PYTHON}\" {script_path} --resume {resume_path} --data {buffer_csv} --run_name gen_{generation} --epochs {current_epochs}"
+        run_command(cmd_train, env_vars={'CUDA_VISIBLE_DEVICES': str(train_gpu)})
         
         # 上传训练指标到 SwanLab
         train_metrics_path = os.path.join(config.LOG_DIR, 'train_metrics.json')
@@ -509,14 +511,14 @@ def main():
         # Export ONNX
         # Use same GPU as training
         script_path = os.path.join(config.BASE_DIR, 'pipeline/export_onnx.py')
-        cmd_export = f"CUDA_VISIBLE_DEVICES={train_gpu} \"{PYTHON}\" {script_path} {resume_path} {onnx_path}"
-        run_command(cmd_export)
+        cmd_export = f"\"{PYTHON}\" {script_path} {resume_path} {onnx_path}"
+        run_command(cmd_export, env_vars={'CUDA_VISIBLE_DEVICES': str(train_gpu)})
         
         # Build Engine
         candidate_engine_path = os.path.join(config.CHECKPOINT_DIR, f'model_gen_{generation}.engine')
         script_build = os.path.join(config.BASE_DIR, 'pipeline/build_engine.py')
-        cmd_build = f"CUDA_VISIBLE_DEVICES={train_gpu} \"{PYTHON}\" {script_build} {onnx_path} {candidate_engine_path}"
-        run_command(cmd_build)
+        cmd_build = f"\"{PYTHON}\" {script_build} {onnx_path} {candidate_engine_path}"
+        run_command(cmd_build, env_vars={'CUDA_VISIBLE_DEVICES': str(train_gpu)})
         
         # Step 5: Evaluation
         print(">>> Step 5: Evaluation")

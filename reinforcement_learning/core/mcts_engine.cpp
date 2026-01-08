@@ -10,6 +10,13 @@
 #include <atomic>
 #include <omp.h>
 
+// Cross-platform DLL export macro
+#ifdef _WIN32
+    #define EXPORT __declspec(dllexport)
+#else
+    #define EXPORT
+#endif
+
 // Export C Interface
 extern "C" {
 
@@ -93,26 +100,26 @@ int G_NUM_THREADS = 4;
 typedef void (*EvalCallback)(int batch_size, const int* boards, float* policy_output, float* value_output);
 EvalCallback py_eval_callback = nullptr;
 
-void set_eval_callback(EvalCallback cb) {
+EXPORT void set_eval_callback(EvalCallback cb) {
     py_eval_callback = cb;
 }
 
-void set_random_seed(int seed) {
+EXPORT void set_random_seed(int seed) {
     rng.seed(seed);
 }
 
-void set_mcts_params(int batch_size, int num_threads) {
+EXPORT void set_mcts_params(int batch_size, int num_threads) {
     if (batch_size > 0) G_BATCH_SIZE = batch_size;
     if (num_threads > 0) G_NUM_THREADS = num_threads;
     omp_set_num_threads(G_NUM_THREADS);
 }
 
-void init_game() {
+EXPORT void init_game() {
     game_board.reset();
     root = std::make_unique<MCTSNode>(-1, 1.0f, 0, BLACK, nullptr);
 }
 
-void play_move(int move) {
+EXPORT void play_move(int move) {
     game_board.make_move(move);
     
     bool found = false;
@@ -132,7 +139,7 @@ void play_move(int move) {
     }
 }
 
-void run_mcts_simulations(int num_simulations) {
+EXPORT void run_mcts_simulations(int num_simulations) {
     if (py_eval_callback == nullptr) return;
 
     int loops = num_simulations / G_BATCH_SIZE;
@@ -316,7 +323,7 @@ void run_mcts_simulations(int num_simulations) {
     }
 }
 
-int get_best_move(float temperature) {
+EXPORT int get_best_move(float temperature) {
     if (!root || root->children.empty()) return -1;
     
     if (temperature == 0.0f) {
@@ -366,14 +373,14 @@ int get_best_move(float temperature) {
 }
 
 // Get Root Win Rate (Black Perspective)
-float get_root_value() {
+EXPORT float get_root_value() {
     if (!root) return 0.0f;
     return root->q_value(); 
 }
 
 // Get Policy Distribution (361 dims)
 // output must be float[361]
-void get_policy(float* output) {
+EXPORT void get_policy(float* output) {
     // Clear
     std::fill(output, output + 361, 0.0f);
     
@@ -393,7 +400,7 @@ void get_policy(float* output) {
     }
 }
 
-void print_top_moves() {
+EXPORT void print_top_moves() {
     if (!root) return;
     
     std::vector<MCTSNode*> children;

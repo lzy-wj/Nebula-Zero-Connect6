@@ -26,8 +26,9 @@ wheels/
 *.exp
 *.lib
 
-# Keep compiled MCTS libraries (mcts.dll, libmcts.so)
-# *.dll and *.so are NOT globally excluded
+# MCTS Libraries (need to be compiled locally)
+*.so
+*.dll
 
 # Models & Data (Too large for git)
 *.pth

@@ -19,7 +19,7 @@ LOG_DIR = os.path.join(BASE_DIR, 'logs')               # 日志和图表
 # 模型和引擎路径
 # ==================================
 # 初始模型：优先查找监督学习的输出，否则使用 checkpoints/initial.pth
-_SL_MODEL_PATH = os.path.join(BASE_DIR, '..', 'supervised_learning', 'output', 'checkpoints', 'checkpoint_latest.pth')
+_SL_MODEL_PATH = os.path.join(BASE_DIR, '..', 'supervised_learning', 'checkpoints', 'checkpoint_latest.pth')
 _DEFAULT_INITIAL_PATH = os.path.join(CHECKPOINT_DIR, 'initial.pth')
 
 # 自动选择初始模型路径

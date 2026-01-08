@@ -23,7 +23,7 @@ python compile_mcts.py
 ### 2. 准备初始模型
 
 系统会自动查找以下位置的模型（按优先级）：
-1. `../supervised_learning/output/checkpoints/checkpoint_latest.pth`（监督学习输出）
+1. `../supervised_learning/checkpoints/checkpoint_latest.pth`（监督学习输出）
 2. `checkpoints/initial.pth`（手动放置）
 
 你也可以从 ModelScope 下载预训练模型放入 `checkpoints/` 目录。

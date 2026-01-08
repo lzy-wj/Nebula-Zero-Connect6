@@ -11,6 +11,9 @@ import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg') # Non-interactive backend
 
+# Cross-platform Python executable
+PYTHON = sys.executable
+
 def run_command(cmd):
     print(f"Running: {cmd}")
     try:
@@ -264,11 +267,11 @@ def main():
             # Export to ONNX
             onnx_path = os.path.join(config.CHECKPOINT_DIR, 'initial.onnx')
             export_script = os.path.join(config.BASE_DIR, 'pipeline/export_onnx.py')
-            run_command(f"python3 {export_script} {best_pth} {onnx_path}")
+            run_command(f"\"{PYTHON}\" {export_script} {best_pth} {onnx_path}")
             
             # Build TensorRT Engine
             build_script = os.path.join(config.BASE_DIR, 'pipeline/build_engine.py')
-            run_command(f"python3 {build_script} {onnx_path} {engine_path}")
+            run_command(f"\"{PYTHON}\" {build_script} {onnx_path} {engine_path}")
             
             # Also save as initial_model.engine for backup
             shutil.copy(engine_path, config.INITIAL_MODEL_PATH)
@@ -383,10 +386,10 @@ def main():
                         onnx_opp = os.path.join(config.CHECKPOINT_DIR, f'opponent_{target_gen}.onnx')
                         engine_to_use = cache_engine_name # Build here
                         
-                        cmd_export = f"python3 {os.path.join(config.BASE_DIR, 'pipeline/export_onnx.py')} {opponent_pth} {onnx_opp}"
+                        cmd_export = f"\"{PYTHON}\" {os.path.join(config.BASE_DIR, 'pipeline/export_onnx.py')} {opponent_pth} {onnx_opp}"
                         run_command(cmd_export)
                         
-                        cmd_build = f"python3 {os.path.join(config.BASE_DIR, 'pipeline/build_engine.py')} {onnx_opp} {engine_to_use}"
+                        cmd_build = f"\"{PYTHON}\" {os.path.join(config.BASE_DIR, 'pipeline/build_engine.py')} {onnx_opp} {engine_to_use}"
                         run_command(cmd_build)
                         
                         if os.path.exists(onnx_opp):
@@ -395,7 +398,7 @@ def main():
                     if engine_to_use and os.path.exists(engine_to_use):
                         opponent_args = f"--opponent {engine_to_use} --mix_ratio {config.ASYMMETRIC_SELFPLAY_RATIO}"
             
-            cmd_gen = f"python3 {script_path} --out {gen_data_path} --total {config.GAMES_PER_LOOP} --engine {engine_path} {opponent_args}"
+            cmd_gen = f"\"{PYTHON}\" {script_path} --out {gen_data_path} --total {config.GAMES_PER_LOOP} --engine {engine_path} {opponent_args}"
             
             t0 = time.time()
             run_command(cmd_gen)
@@ -469,7 +472,7 @@ def main():
         # We pass CUDA_VISIBLE_DEVICES explicitly to the training command
         train_gpu = getattr(config, 'TRAINING_GPU', '0')
         script_path = os.path.join(config.BASE_DIR, 'pipeline/train.py')
-        cmd_train = f"CUDA_VISIBLE_DEVICES={train_gpu} python3 {script_path} --resume {resume_path} --data {buffer_csv} --run_name gen_{generation} --epochs {current_epochs}"
+        cmd_train = f"CUDA_VISIBLE_DEVICES={train_gpu} \"{PYTHON}\" {script_path} --resume {resume_path} --data {buffer_csv} --run_name gen_{generation} --epochs {current_epochs}"
         run_command(cmd_train)
         
         # 上传训练指标到 SwanLab
@@ -498,13 +501,13 @@ def main():
         # Export ONNX
         # Use same GPU as training
         script_path = os.path.join(config.BASE_DIR, 'pipeline/export_onnx.py')
-        cmd_export = f"CUDA_VISIBLE_DEVICES={train_gpu} python3 {script_path} {resume_path} {onnx_path}"
+        cmd_export = f"CUDA_VISIBLE_DEVICES={train_gpu} \"{PYTHON}\" {script_path} {resume_path} {onnx_path}"
         run_command(cmd_export)
         
         # Build Engine
         candidate_engine_path = os.path.join(config.CHECKPOINT_DIR, f'model_gen_{generation}.engine')
         script_build = os.path.join(config.BASE_DIR, 'pipeline/build_engine.py')
-        cmd_build = f"CUDA_VISIBLE_DEVICES={train_gpu} python3 {script_build} {onnx_path} {candidate_engine_path}"
+        cmd_build = f"CUDA_VISIBLE_DEVICES={train_gpu} \"{PYTHON}\" {script_build} {onnx_path} {candidate_engine_path}"
         run_command(cmd_build)
         
         # Step 5: Evaluation
@@ -520,7 +523,7 @@ def main():
         # Evaluate the CANDIDATE engine
         # We pass the candidate_engine_path, not config.CURRENT_ENGINE_PATH
         # The gpu_id should be train_gpu
-        cmd_eval = f"python3 {script_eval} --current_engine {candidate_engine_path} --generation {generation} --gpu {train_gpu} --save_data"
+        cmd_eval = f"\"{PYTHON}\" {script_eval} --current_engine {candidate_engine_path} --generation {generation} --gpu {train_gpu} --save_data"
         
         run_command(cmd_eval)
         

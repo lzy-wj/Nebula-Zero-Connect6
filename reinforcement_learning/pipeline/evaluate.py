@@ -17,6 +17,9 @@ from core.connect6_game import Connect6Game
 from core.mcts import MCTSEngine
 import config
 
+# Cross-platform Python executable
+PYTHON = sys.executable
+
 def run_command(cmd):
     print(f"Running: {cmd}")
     os.system(cmd)
@@ -34,12 +37,12 @@ def convert_to_engine(pth_path, engine_path, gpu_id):
     # 1. Export ONNX
     onnx_path = engine_path.replace('.engine', '.onnx')
     script_export = os.path.join(config.BASE_DIR, 'pipeline/export_onnx.py')
-    cmd_export = f"CUDA_VISIBLE_DEVICES={gpu_id} python3 {script_export} {pth_path} {onnx_path}"
+    cmd_export = f"CUDA_VISIBLE_DEVICES={gpu_id} \"{PYTHON}\" {script_export} {pth_path} {onnx_path}"
     run_command(cmd_export)
     
     # 2. Build Engine
     script_build = os.path.join(config.BASE_DIR, 'pipeline/build_engine.py')
-    cmd_build = f"CUDA_VISIBLE_DEVICES={gpu_id} python3 {script_build} {onnx_path} {engine_path}"
+    cmd_build = f"CUDA_VISIBLE_DEVICES={gpu_id} \"{PYTHON}\" {script_build} {onnx_path} {engine_path}"
     run_command(cmd_build)
     
     # Cleanup ONNX

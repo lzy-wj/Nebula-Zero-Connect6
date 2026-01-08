@@ -79,8 +79,17 @@ python main.py
 ```
 
 ## 致谢
-- **AlphaZero**: DeepMind 的开创性工作。
-- **ModelScope**: 提供模型托管服务。
+
+### 团队成员
+- **刘钊洋** ([@lzy-wj](https://github.com/lzy-wj)) - 强化学习训练、算法设计
+- **陈涛** ([@Colin0v0](https://github.com/Colin0v0)) - 本地 GUI 客户端开发
+
+### 特别感谢
+- **ShaohonChen** ([@ShaohonChen](https://github.com/ShaohonChen)) - 项目指导与代码校对
+- **北京邮电大学数学科学学院** - 提供 GPU 算力支持
+- **[SwanLab](https://swanlab.cn)** - 训练可视化支持
+- **DeepMind AlphaZero** - 算法原型
+- **ModelScope** - 模型托管服务
 
 ## 许可证
 MIT License

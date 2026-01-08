@@ -22,6 +22,9 @@ from models.c6transnet import C6TransNet
 from data.dataset import Connect6Dataset
 
 # 设置日志
+# 确保 output 目录存在
+os.makedirs('output', exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',

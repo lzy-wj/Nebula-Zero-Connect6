@@ -1,3 +1,0 @@
-第 1 名: model_gen_16.pth (积分: 2)
-第 2 名: model_gen_13.pth (积分: 0)
-第 3 名: model_gen_12.pth (积分: -2)

@@ -8,6 +8,19 @@
 
 > **注**: 本项目为首届北京市大学生"人工智能+"创新大赛六子棋赛道冠军项目。
 
+## 目录
+
+- [核心特性](#核心特性)
+- [目录结构](#目录结构)
+- [快速开始](#快速开始)
+- [各模块详细说明](#各模块详细说明)
+  - [监督学习](#监督学习)
+  - [强化学习](#强化学习)
+  - [本地客户端](#本地客户端)
+  - [模型评估](#模型评估)
+- [致谢](#致谢)
+- [许可证](#许可证)
+
 ## 核心特性
 
 - **先进建模**: 利用自回归逻辑完美解决了 361×360 的动作空间爆炸问题。
@@ -22,11 +35,11 @@
 
 ```plaintext
 connect6/
-├── reinforcement_learning/  # 核心强化学习训练循环
 ├── supervised_learning/     # 监督学习预训练
-├── Competition/             # 在线评测 Web 对战平台
+├── reinforcement_learning/  # 核心强化学习训练循环
 ├── local/                   # 本地 GUI 客户端
 ├── final/                   # 大乱斗脚本（模型评估与排位）
+├── Competition/             # 在线评测 Web 对战平台
 └── README.md
 ```
 
@@ -56,33 +69,70 @@ connect6/
    由于文件较大，模型权重和自对弈数据托管在 ModelScope 平台。
    请访问 [ModelScope 项目页](https://modelscope.cn/models/Lazyshu/Nebula_Zero_Connect6) 手动下载模型文件，并放入对应的 `checkpoints/` 目录。
 
-### 使用方法
+---
 
-**训练（强化学习）**
+## 各模块详细说明
+
+### 监督学习
+
+使用人类对局数据预训练神经网络，为强化学习提供初始模型。
+
+```bash
+cd supervised_learning
+python train.py
+```
+
+详见 [supervised_learning/README.md](supervised_learning/README.md)
+
+---
+
+### 强化学习
+
+AlphaZero 自我对弈训练循环。
+
 ```bash
 cd reinforcement_learning
 python run_loop.py
 ```
 
-**评估（大乱斗）**
+详见 [reinforcement_learning/README.md](reinforcement_learning/README.md)
+
+---
+
+### 本地客户端
+
+PyQt5 GUI 界面，可与 AI 对弈。需要先编译 C++ MCTS 引擎。
+
+```bash
+cd local/mcts
+python compile_dll.py  # 编译 MCTS 引擎
+
+cd ..
+python main.py  # 启动界面
+```
+
+详见 [local/README.md](local/README.md)
+
+---
+
+### 模型评估
+
 在历史模型之间运行循环排位赛。
+
 ```bash
 cd final
 python tournament_pro.py
 ```
 
-**本地人机对战**
-启动 GUI 界面与 AI 对弈。
-```bash
-cd local
-python main.py
-```
+---
 
 ## 致谢
 
 ### 团队成员
 - **刘钊洋** ([@lzy-wj](https://github.com/lzy-wj)) - 强化学习训练、算法设计
 - **陈涛** ([@Colin0v0](https://github.com/Colin0v0)) - 本地 GUI 客户端开发
+- **龚飞雪** ([@FeixueGong](https://github.com/FeixueGong)) - 新架构尝试、项目支持
+- **胡子涵** - 人类对局数据爬取
 
 ### 特别感谢
 - **ShaohonChen** ([@ShaohonChen](https://github.com/ShaohonChen)) - 项目指导与代码校对

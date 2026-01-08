@@ -55,31 +55,25 @@ python compile_dll.py
 1. **准备模型**: 
    将下载好的 `.pth` 文件（例如 `best.pth`）放入 `local/tools/` 目录。
 
-2. **一键编译与部署**:
-   进入 `local/tools` 目录，运行以下指令：
+2. **编译与部署**:
 
+   **Linux / macOS:**
    ```bash
    cd local/tools
-   
-   # 设置模型文件名 (不带 .pth 后缀)
-   MODEL_NAME="best" 
-   
-   # 导出 ONNX
-   python export_onnx.py ${MODEL_NAME}.pth model.onnx
-   
-   # 编译 TensorRT 引擎
+   python export_onnx.py best.pth model.onnx
    python build_engine.py model.onnx final.engine
-   
-   # 部署到游戏目录 (覆盖旧引擎)
    mv final.engine ../engine/current_model.engine
-   
-   # 清理中间文件
    rm model.onnx
-   
-   echo "部署完成！"
    ```
 
-   > **Windows 用户**: 请依次执行上述命令，将 `mv` 替换为 `move`，`rm` 替换为 `del`。
+   **Windows (PowerShell):**
+   ```powershell
+   cd local\tools
+   python export_onnx.py best.pth model.onnx
+   python build_engine.py model.onnx final.engine
+   move final.engine ..\engine\current_model.engine
+   del model.onnx
+   ```
 
 ---
 

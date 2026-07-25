@@ -1,15 +1,56 @@
+# Default: text files use LF in the repository
+* text=auto eol=lf
+
+# Source / config
 *.py text eol=lf
+*.pyi text eol=lf
 *.md text eol=lf
 *.txt text eol=lf
+*.toml text eol=lf
+*.ini text eol=lf
+*.cfg text eol=lf
 *.cpp text eol=lf
+*.cc text eol=lf
+*.cxx text eol=lf
+*.c text eol=lf
 *.h text eol=lf
+*.hpp text eol=lf
 *.html text eol=lf
+*.css text eol=lf
+*.js text eol=lf
+*.ts text eol=lf
 *.json text eol=lf
 *.yaml text eol=lf
 *.yml text eol=lf
+*.sh text eol=lf
+*.bash text eol=lf
+*.cmake text eol=lf
+CMakeLists.txt text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+.editorconfig text eol=lf
 
+# Windows scripts keep CRLF when needed
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets / model artifacts (never diff as text)
 *.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.whl binary
+*.so binary
+*.dll binary
+*.dylib binary
 *.pth binary
 *.pt binary
 *.onnx binary
 *.engine binary
+*.npz binary
+*.zip binary
+*.tar binary
+*.gz binary
+*.zst binary

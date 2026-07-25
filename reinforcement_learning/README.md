@@ -23,7 +23,7 @@ Linux 需要 `g++` 和 OpenMP，Windows 需要 Visual Studio x64 编译环境。
 1. `../supervised_learning/checkpoints/checkpoint_latest.pth`
 2. `checkpoints/initial.pth`
 
-TensorRT 引擎与 GPU 架构、TensorRT 版本绑定。换到 A800、RTX 5090 或其他
+TensorRT 引擎与 GPU 架构、TensorRT 版本绑定。换到其他架构的
 GPU 后必须在目标机器重新导出和构建，不能复制旧 `.engine` 文件直接使用。
 
 ```bash
@@ -63,45 +63,42 @@ NEBULA_CUDA_GRAPH=0 python ../benchmarks/benchmark_mcts.py \
 
 ## 不同 GPU 的调优方法
 
-当前机器的默认值是两个 worker、物理卡 6/7 各一个、每个 worker 使用 32 个
-MCTS CPU 线程和 batch 64。卡 0–5 不会被训练、自对弈或 TensorRT 构建使用。
-worker 数、MCTS batch 和设备均支持环境变量，不需要修改源码：
+worker 数、MCTS batch 和设备均通过环境变量配置，不需要改源码。示例（请改成你的 GPU id）：
 
 ```bash
-NEBULA_SELFPLAY_GPUS=6,7 \
+NEBULA_SELFPLAY_GPUS=0,1 \
 NEBULA_NUM_WORKERS=2 \
 NEBULA_MCTS_BATCH_SIZE=64 \
 python pipeline/generate.py --engine checkpoints/current_model.engine --total 20
 ```
 
 改变 `NEBULA_MCTS_BATCH_SIZE` 后必须用相同值重新构建 TensorRT 引擎。建议在
-每种目标 GPU 上测试 batch 32、64、128，并比较端到端 MCTS 吞吐，不要只看
-神经网络单次延迟。在当前 A800 上，batch 128 虽然更快，但唯一评估局面明显
-减少，并在 40 局配对换色测试中以 16:24 负于 batch 64，因此保持 batch 64。
-同一张卡上增加 worker 没有提高总吞吐，因此每张卡只运行一个。两张卡之间采用
-共享动态任务计数器，先完成棋局的卡立即领取下一局，避免固定平分后等待长局。
+目标 GPU 上对比 batch 32/64/128 的**端到端** MCTS 吞吐与棋力门禁，不要只看
+单次网络延迟。实践中 batch 过大可能降低 batch 内独特局面数；每卡通常只跑
+一个 worker 更稳。多卡之间用共享任务计数器动态领局，避免长局拖尾。
 
-## H20 远端自对弈
+## 远端自对弈
 
-训练、门控和 SwanLab 的 `AlphaZero_Training_Loop` 仍由本机唯一维护，H20
-服务器只作为本代棋谱执行器，不会创建第二套训练 loop。启用方式：
+训练、门控和 SwanLab 外环由**本机**唯一维护；远端机器只作为本代棋谱执行器，
+不要在远端再起一套训练 loop。启用示例：
 
 ```bash
 NEBULA_SELFPLAY_BACKEND=remote \
 NEBULA_REMOTE_SELFPLAY_HOST=user@remote-host \
+NEBULA_REMOTE_PROJECT_DIR=/path/to/Nebula-Zero-Connect6 \
+NEBULA_REMOTE_PYTHON=python \
 NEBULA_REMOTE_SELFPLAY_GPUS=0,1,2,3 \
 NEBULA_REMOTE_NUM_WORKERS=4 \
 NEBULA_REMOTE_MCTS_THREADS=46 \
-NEBULA_REMOTE_CPUSET=0-183 \
 python run_forever.py --swanlab-mode online
 ```
 
 远端执行器会按代增量同步源码；C++ MCTS 源码变化时才重编译，`best.pth`
-变化时才在 H20 上重建专用 TensorRT 引擎。棋谱先保存在远端，再原子取回本机；
+变化时才在远端目标 GPU 上重建专用 TensorRT 引擎。棋谱先保存在远端，再原子取回本机；
 网络中断后会比较两侧已完成局数续跑。训练和 SwanLab 始终等待棋谱完整取回后才
 进入下一阶段。SSH 使用短时复用连接，减少逐个校验步骤的握手开销。
 
-H20 四卡实测的固定搜索吞吐如下：
+某四卡服务器上固定搜索吞吐示例：
 
 | 配置 | CPU 范围 | 固定搜索吞吐 |
 | --- | --- | ---: |
@@ -133,7 +130,7 @@ CUDA_VISIBLE_DEVICES=6 python ../benchmarks/benchmark_tensorrt_engine.py \
   --batches 16,32,64
 ```
 
-在本次 A800 验收中，固定 12,000 次模拟的中位耗时从去重前约 `1.15s` 降至
+在一次双卡验收中，固定 12,000 次模拟的中位耗时从去重前约 `1.15s` 降至
 约 `0.43s`，提升约 2.7 倍；完整自对弈通常能省去 80% 以上的重复网络评估。
 动态 profile 收窄后，单执行上下文显存从约 `1849MiB` 降至约 `136MiB`。
 黑棋 400、白棋 1200 的单卡 50 局样本耗时约 59 秒；卡 6+7 动态调度后约
@@ -187,5 +184,5 @@ NEBULA_TRAINING_GPUS=6,7 NEBULA_TRAIN_PRECISION=bf16 python run_forever.py
 
 也可以设置为 `fp16` 或 `fp32`。实测全局 batch 386 时，BF16 训练从单卡约
 `2322 samples/s` 提升到双卡约 `3834 samples/s`。TensorRT 推理精度与训练
-精度分开控制：A800 上 BF16 推理在 batch 64 更慢且数值误差更大，因此自对弈
+精度分开控制：部分 GPU 上 BF16 推理在 batch 64 更慢且数值误差更大，因此自对弈
 继续使用 FP16；这不会改变 BF16 训练设置。

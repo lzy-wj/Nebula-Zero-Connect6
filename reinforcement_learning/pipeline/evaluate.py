@@ -7,11 +7,6 @@ import glob
 import json
 import numpy as np
 import torch
-import matplotlib.pyplot as plt
-import numpy as np
-import torch
-import matplotlib.pyplot as plt
-import seaborn as sns
 import subprocess
 
 # Add paths
@@ -60,6 +55,9 @@ def plot_results(results, generation, save_path):
     """
     Generate a summary bar chart for the evaluation results.
     """
+    # 只有真正绘图时才加载可视化依赖；纯门禁和无界面服务器不需要安装它们。
+    import matplotlib.pyplot as plt
+
     opponents = list(results.keys())
     if not opponents:
         return
@@ -123,24 +121,6 @@ def plot_results(results, generation, save_path):
     autolabel_steps(rects4, ax2)
 
     plt.tight_layout()
-    plt.savefig(save_path)
-    plt.close()
-    ax2.set_xticks(x)
-    ax2.set_xticklabels(opponents)
-    
-    def autolabel_steps(rects, ax):
-        for rect in rects:
-            height = rect.get_height()
-            ax.annotate(f'{height:.1f}',
-                        xy=(rect.get_x() + rect.get_width() / 2, height),
-                        xytext=(0, 3),
-                        textcoords="offset points",
-                        ha='center', va='bottom', fontsize=9)
-    autolabel_steps(rects4, ax2)
-    
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=100)
-    plt.tight_layout()
     plt.savefig(save_path, dpi=100)
     plt.close()
 
@@ -150,7 +130,11 @@ def plot_static_results(results, generation, save_path):
     Excludes relative history (gen_X where X is recent).
     """
     # Filter keys: Keep only hardcoded benchmarks
-    static_keys = [k for k in results.keys() if k in ['gen_350', 'gen_450']]
+    configured_names = {
+        name.replace('model_', '').replace('.pth', '')
+        for name in config.STATIC_BENCHMARKS
+    }
+    static_keys = [k for k in results.keys() if k in configured_names]
     if not static_keys:
         return
 
@@ -158,7 +142,42 @@ def plot_static_results(results, generation, save_path):
     subset = {k: results[k] for k in static_keys}
     plot_results(subset, generation, save_path)
 
-def play_match(engine1_path, engine2_path, games=30, simulations=1200, gpu_id=0):
+def build_paired_openings(games, seed, opening_stones):
+    """为每两局换色对局生成同一个确定性开局。"""
+    pair_count = (games + 1) // 2
+    rng = np.random.default_rng(seed)
+    center = 9 * 19 + 9
+    central_candidates = [
+        r * 19 + c
+        for r in range(5, 14)
+        for c in range(5, 14)
+        if r * 19 + c != center
+    ]
+
+    openings = []
+    for _ in range(pair_count):
+        stones = [center]
+        extra_count = max(0, opening_stones - 1)
+        if extra_count:
+            extras = rng.choice(central_candidates, size=extra_count, replace=False)
+            stones.extend(int(move) for move in extras)
+        openings.append(stones)
+    return [openings[game_idx // 2] for game_idx in range(games)]
+
+
+def play_match(
+    engine1_path,
+    engine2_path,
+    games=30,
+    simulations=1200,
+    gpu_id=0,
+    seed=2026,
+    opening_stones=5,
+    simulations_black=None,
+    simulations_white=None,
+    engine1_pair_heads=None,
+    engine2_pair_heads=None,
+):
     """
     Play a match between two engines.
     engine1: Current Model
@@ -186,12 +205,28 @@ def play_match(engine1_path, engine2_path, games=30, simulations=1200, gpu_id=0)
     try:
         # Instantiate two MCTS wrappers
         # They share the same C++ lib state, but have different TensorRT contexts
-        mcts1 = MCTSEngine(engine1_path, device=device)
-        mcts2 = MCTSEngine(engine2_path, device=device)
+        mcts1 = MCTSEngine(
+            engine1_path,
+            device=device,
+            pair_heads_path=engine1_pair_heads,
+        )
+        mcts2 = MCTSEngine(
+            engine2_path,
+            device=device,
+            pair_heads_path=engine2_pair_heads,
+        )
         
         # Set params
         mcts1.set_params(batch_size=config.MCTS_BATCH_SIZE, num_threads=config.MCTS_THREADS)
         mcts2.set_params(batch_size=config.MCTS_BATCH_SIZE, num_threads=config.MCTS_THREADS)
+        for engine in (mcts1, mcts2):
+            engine.set_search_params(
+                cpuct=config.MCTS_CPUCT,
+                widening_base=config.MCTS_WIDENING_BASE,
+                widening_scale=config.MCTS_WIDENING_SCALE,
+            )
+            # 门控对局优先保证同配置可复现，不采用生产自对弈的同树并行竞态。
+            engine.set_deterministic_selection(True)
         
     except Exception as e:
         print(f"Error initializing engines: {e}")
@@ -201,8 +236,11 @@ def play_match(engine1_path, engine2_path, games=30, simulations=1200, gpu_id=0)
         'wins': 0, 'losses': 0, 'draws': 0,
         'win_steps': [], 'loss_steps': [], 'draw_steps': [],
         'black_wins': 0, 'black_games': 0,
-        'white_wins': 0, 'white_games': 0
+        'white_wins': 0, 'white_games': 0,
+        'game_black_wins': 0, 'game_white_wins': 0,
     }
+
+    paired_openings = build_paired_openings(games, seed, opening_stones)
     
     # Alternate colors
     # Game i: P1=engine1 (Black), P2=engine2 (White)
@@ -210,6 +248,13 @@ def play_match(engine1_path, engine2_path, games=30, simulations=1200, gpu_id=0)
     
     for i in range(games):
         game = Connect6Game()
+
+        # 同一组的两局使用相同开局并交换模型颜色，避免 30 局其实只
+        # 重复两条确定性轨迹，也能抵消开局和先后手偏差。
+        game_policies = []
+        for opening_move in paired_openings[i]:
+            game.play(opening_move)
+            game_policies.append(f"{opening_move}:1.0000")
         
         # Determine who is Black (Player 1)
         if i % 2 == 0:
@@ -224,8 +269,6 @@ def play_match(engine1_path, engine2_path, games=30, simulations=1200, gpu_id=0)
             stats['white_games'] += 1
             
         print(f"Game {i+1}/{games} | Black: {'Current' if p1_is_engine1 else 'Opponent'}")
-        
-        game_policies = [] # List of policy strings for this game
         
         while True:
             # Determine current player object
@@ -250,7 +293,17 @@ def play_match(engine1_path, engine2_path, games=30, simulations=1200, gpu_id=0)
                     mcts_lib.play_move(idx)
                 
             # 3. Search
-            move = current_mcts.get_mcts_move(simulations=simulations, temperature=0.0) # Deterministic for eval
+            color_simulations = (
+                simulations_black
+                if game.current_player == 1
+                else simulations_white
+            )
+            if color_simulations is None:
+                color_simulations = simulations
+            move = current_mcts.get_mcts_move(
+                simulations=color_simulations,
+                temperature=0.0,
+            )
             
             # Capture Policy
             policy_dist = current_mcts.get_policy()
@@ -268,6 +321,7 @@ def play_match(engine1_path, engine2_path, games=30, simulations=1200, gpu_id=0)
                     stats['draw_steps'].append(steps)
                     print(f"Game {i+1} Result: Draw ({steps} moves)")
                 elif game.winner == 1: # Black Wins
+                    stats['game_black_wins'] += 1
                     if p1_is_engine1:
                         stats['wins'] += 1
                         stats['win_steps'].append(steps)
@@ -278,6 +332,7 @@ def play_match(engine1_path, engine2_path, games=30, simulations=1200, gpu_id=0)
                         stats['loss_steps'].append(steps)
                         print(f"Game {i+1} Result: Opponent (Black) Wins ({steps} moves)")
                 else: # White Wins (-1)
+                    stats['game_white_wins'] += 1
                     if not p1_is_engine1: # Engine1 is White
                         stats['wins'] += 1
                         stats['win_steps'].append(steps)
@@ -314,20 +369,39 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--current_engine', type=str, required=True)
     parser.add_argument('--generation', type=int, required=True)
-    parser.add_argument('--gpu', type=str, default='0')
+    parser.add_argument('--gpu', type=str, default=config.TRAINING_GPU)
+    parser.add_argument('--incumbent_engine', type=str, default=None, help='当前最佳模型的 TensorRT 引擎')
+    parser.add_argument('--current-pair-heads', type=str, default=None)
+    parser.add_argument('--incumbent-pair-heads', type=str, default=None)
     parser.add_argument('--save_data', action='store_true', help='Save evaluation games for training')
-    parser.add_argument('--games', type=int, default=30, help='Number of games to play per opponent')
+    parser.add_argument('--games', type=int, default=config.EVAL_GAMES, help='Number of games to play per opponent')
+    parser.add_argument('--simulations', type=int, default=config.EVAL_SIMULATIONS)
+    parser.add_argument('--simulations-black', type=int, default=None)
+    parser.add_argument('--simulations-white', type=int, default=None)
+    parser.add_argument('--seed', type=int, default=config.EVAL_SEED)
+    parser.add_argument('--opening_stones', type=int, default=config.EVAL_OPENING_STONES)
     args = parser.parse_args()
     
     # Opponents - 使用本地 checkpoints 目录，避免硬编码路径
+    # 三元组：(路径、显示名、是否已经是 TensorRT 引擎)。门控始终先
+    # 对战当前 incumbent，而不是用若干旧代平均胜率代替。
     opponents = []
+    if args.incumbent_engine and os.path.exists(args.incumbent_engine):
+        opponents.append(
+            (
+                args.incumbent_engine,
+                'incumbent',
+                True,
+                args.incumbent_pair_heads,
+            )
+        )
     
     # 添加静态基准模型（从 config 读取）
     for bench in config.STATIC_BENCHMARKS:
         bench_path = os.path.join(config.CHECKPOINT_DIR, bench)
         if os.path.exists(bench_path):
             name = bench.replace('model_', '').replace('.pth', '')
-            opponents.append((bench_path, name))
+            opponents.append((bench_path, name, False, None))
     
     # 添加相对代差模型（从 config 读取）
     for offset in config.EVAL_GENERATION_OFFSETS:
@@ -335,7 +409,7 @@ def main():
         if past_gen > 0:
             past_gen_path = os.path.join(config.CHECKPOINT_DIR, f'model_gen_{past_gen}.pth')
             if os.path.exists(past_gen_path):
-                opponents.append((past_gen_path, f"gen_{past_gen}"))
+                opponents.append((past_gen_path, f"gen_{past_gen}", False, None))
     
     # 如果没有任何对手模型，打印提示并返回
     if not opponents:
@@ -352,29 +426,33 @@ def main():
         
     # Initialize Results Container
     results_summary = {}
-    
-    for pth_path, name in opponents:
-        if not os.path.exists(pth_path):
-            print(f"Opponent {name} not found at {pth_path}. Skipping.")
+    all_data_lines = []
+
+    for opponent_path, name, is_engine, opponent_pair_heads in opponents:
+        if not os.path.exists(opponent_path):
+            print(f"Opponent {name} not found at {opponent_path}. Skipping.")
             continue
-            
-        # Convert to Engine
-        engine_path = pth_path.replace('.pth', '.engine')
-        convert_to_engine(pth_path, engine_path, args.gpu)
+
+        engine_path = opponent_path
+        if not is_engine:
+            engine_path = opponent_path.replace('.pth', '.engine')
+            convert_to_engine(opponent_path, engine_path, args.gpu)
         
         print(f"\n>>> Evaluating against {name}...")
-        stats, data_lines = play_match(args.current_engine, engine_path, games=args.games, simulations=1200, gpu_id=int(args.gpu))
-        
-        if args.save_data and data_lines:
-            save_csv = os.path.join(config.RAW_DATA_DIR, f'eval_data_{args.generation}.csv')
-            mode = 'a' if os.path.exists(save_csv) else 'w'
-            with open(save_csv, mode) as f:
-                if mode == 'w':
-                    f.write("moves,winner,policies,bonuses\n") # Header standard format
-                for line in data_lines:
-                    # Line is already formatted as CSV string
-                    f.write(line + "\n")
-            print(f"Saved {len(data_lines)} positions to {save_csv}")
+        stats, data_lines = play_match(
+            args.current_engine,
+            engine_path,
+            games=args.games,
+            simulations=args.simulations,
+            gpu_id=int(args.gpu),
+            seed=args.seed,
+            opening_stones=args.opening_stones,
+            simulations_black=args.simulations_black,
+            simulations_white=args.simulations_white,
+            engine1_pair_heads=args.current_pair_heads,
+            engine2_pair_heads=opponent_pair_heads,
+        )
+        all_data_lines.extend(data_lines)
         
         if not stats:
             print("Match failed.")
@@ -393,6 +471,7 @@ def main():
             'losses': losses,
             'draws': draws,
             'win_rate': wins / total,
+            'score_rate': (wins + 0.5 * draws) / total,
             'loss_rate': losses / total,
             'draw_rate': draws / total,
             'avg_win_steps': np.mean(stats['win_steps']) if stats['win_steps'] else 0,
@@ -403,6 +482,17 @@ def main():
         }
         
         print(f"Vs {name}: Win Rate {results_summary[name]['win_rate']:.2%}")
+
+    # 每次评估原子式覆盖本代数据，重跑不会在文件中持续追加重复对局。
+    if args.save_data and all_data_lines:
+        save_csv = os.path.join(config.RAW_DATA_DIR, f'eval_data_{args.generation}.csv')
+        temp_csv = f"{save_csv}.tmp"
+        with open(temp_csv, 'w', encoding='utf-8', newline='') as f:
+            f.write("moves,winner,policies,bonuses\n")
+            for line in all_data_lines:
+                f.write(line + "\n")
+        os.replace(temp_csv, save_csv)
+        print(f"Saved {len(all_data_lines)} evaluation games to {save_csv}")
 
     # Save Results
     json_path = os.path.join(config.LOG_DIR, 'eval_results.json')

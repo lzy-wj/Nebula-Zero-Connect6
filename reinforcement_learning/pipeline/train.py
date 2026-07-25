@@ -1,41 +1,79 @@
 import sys
 import os
+import csv
+import json
+import random
+import time
+
+# 独立运行训练脚本时也只使用预留的物理卡 6；主循环传入的显式设置优先。
+os.environ.setdefault(
+    'CUDA_VISIBLE_DEVICES',
+    os.environ.get(
+        'NEBULA_TRAINING_GPUS',
+        os.environ.get('NEBULA_TRAINING_GPU', '6'),
+    ),
+)
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
-from torch.utils.tensorboard import SummaryWriter
 import numpy as np
-import pandas as pd
 import glob
 from tqdm import tqdm
 import argparse
-import swanlab
-import matplotlib.pyplot as plt
-import io
-from PIL import Image
 
 # Local imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from core.model import C6TransNet
-from core.connect6_game import Connect6Game
 import config
 
-import csv
 
-# 安全的 SwanLab 日志函数（处理子进程情况）
-def safe_swanlab_log(data, step=None):
-    """包装 swanlab.log，在子进程中不会崩溃"""
-    try:
-        if step is not None:
-            safe_swanlab_log(data, step=step)
-        else:
-            safe_swanlab_log(data)
-    except RuntimeError:
-        # swanlab.init 未调用（子进程中常见）
-        pass
-    except Exception as e:
-        print(f"SwanLab log warning: {e}")
+def seed_everything(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % (2 ** 32)
+    random.seed(worker_seed)
+    np.random.seed(worker_seed)
+
+
+def resolve_precision(device, requested):
+    requested = requested.lower()
+    if requested not in {'bf16', 'fp16', 'fp32'}:
+        raise ValueError(f"Unsupported precision: {requested}")
+
+    if device.type != 'cuda':
+        return 'fp32', None
+
+    if requested == 'bf16':
+        if torch.cuda.is_bf16_supported():
+            return 'bf16', torch.bfloat16
+        print("Warning: BF16 is not supported by this GPU; falling back to FP16.")
+        return 'fp16', torch.float16
+    if requested == 'fp16':
+        return 'fp16', torch.float16
+    return 'fp32', None
+
+
+def atomic_torch_save(payload, output_path):
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    temp_path = f"{output_path}.tmp"
+    torch.save(payload, temp_path)
+    os.replace(temp_path, output_path)
+
+
+def atomic_json_dump(payload, output_path):
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    temp_path = f"{output_path}.tmp"
+    with open(temp_path, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, indent=2)
+    os.replace(temp_path, output_path)
 
 class Connect6Dataset(Dataset):
     def __init__(self, csv_files):
@@ -145,7 +183,7 @@ class Connect6Dataset(Dataset):
             # Estimate move count by counting semicolons or commas
             if isinstance(moves_str, str):
                 # Format is M1;M2;... or M1,M2
-                count = moves_str.count(';') + 1
+                count = max(moves_str.count(','), moves_str.count(';')) + 1
                 if count > 60:
                      # Add with probability 0.2 (1.2x weight roughly)
                     if np.random.rand() < 0.2:
@@ -211,7 +249,8 @@ class Connect6Dataset(Dataset):
                 if not m_str: return None
                 # Try integer first
                 try:
-                    return int(m_str)
+                    move = int(m_str)
+                    return move if 0 <= move < 361 else None
                 except ValueError:
                     # Try coordinate like 'j10'
                     try:
@@ -301,98 +340,16 @@ class Connect6Dataset(Dataset):
         if move_idx < len(bonuses):
             current_bonus = bonuses[move_idx]
         
-        # Reconstruct board at this state
-        # Optimization: We don't need full replay if we just want one state.
-        # But we need to place stones.
-        # For simplicity/correctness: Replay up to move_idx.
-        
-        # TODO: Move this to C++ or optimize. For now, Python replay.
+        # Vectorized state reconstruction. The previous implementation replayed
+        # every prefix twice in Python, which dominated DataLoader CPU time.
         board = np.zeros((19, 19), dtype=np.int8)
-        
-        # Replay
-        # Move 0: Black (1 stone)
-        # Move k>0: White/Black (2 stones) - Wait, moves list is coordinates.
-        # Connect6Game logic:
-        # First move: 1 stone. Subsequent: 2 stones.
-        # The moves_str contains coordinates (0-360).
-        # Wait, generate.py saves coordinates (0-360).
-        
-        # Let's look at generate.py:
-        # game.moves.append(coord) -> coord is int 0-360
-        
-        # Replay Logic:
-        current_player = 1 # Black
-        
-        # We need to replay ALL moves up to move_idx
-        for i in range(move_idx):
-            m = moves[i]
-            r, c = m // 19, m % 19
-            board[r, c] = current_player
-            
-            # Update player?
-            # Connect6: 
-            # i=0 (1st move): 1 stone. Next turn.
-            # i=1 (2nd move): 1st stone of White.
-            # i=2 (3rd move): 2nd stone of White. Next turn.
-            # i=3 (4th move): 1st stone of Black.
-            # ...
-            
-            # Turn logic:
-            # Move 0: Black
-            # Move 1,2: White
-            # Move 3,4: Black
-            # Move 5,6: White
-            
-            # Actually, let's just use the simple rule:
-            # Stones on board count.
-            stones = i + 1
-            # Next player for move i+1?
-            # If stones == 1, next is White.
-            # If stones > 1: if (stones+1)//2 is odd -> White, else Black?
-            # Let's use the logic from game.py:
-            # rank = (n_stones + 1) // 2
-            # if rank % 2 == 1: next = -1 (White) else 1 (Black)
-            
-            # But wait, we need the player who MADE the move to set the board.
-            # Correct logic:
-            # i=0: Black
-            # i=1: White
-            # i=2: White
-            # i=3: Black
-            # i=4: Black
-            
-            rank = (i + 1 + 1) // 2 # i is 0-indexed count of stones before this move
-            # No, let's just track it.
-            if i == 0:
-                current_player = -1
-            elif (i % 2) == 0: # i=2, 4, 6... (2nd stone of a pair, or start of new pair?)
-                # i=1 (2nd stone overall, 1st of White): White. Next is White.
-                # i=2 (3rd stone overall, 2nd of White): White. Next is Black.
-                pass
-            
-            # Easier: Re-implement 'stones to place' logic or just use the formula
-            # Move i was placed by:
-            # 0 -> Black
-            # 1,2 -> White
-            # 3,4 -> Black
-            # 5,6 -> White
-            # Formula: if i == 0: Black. Else: ((i+1)//2) % 2 == 1 ? White : Black
-        
-        # Reset for the target state
-        board.fill(0)
-        current_player = 1
-        for i in range(move_idx):
-            m = moves[i]
-            r, c = m // 19, m % 19
-            
-            # Who placed this stone?
-            p = 1
-            if i == 0: p = 1
-            else:
-                if ((i+1)//2) % 2 == 1: p = -1
-                else: p = 1
-            
-            board[r, c] = p
+        if move_idx:
+            prefix_moves = np.asarray(moves[:move_idx], dtype=np.int64)
+            indices = np.arange(move_idx, dtype=np.int64)
+            players = np.ones(move_idx, dtype=np.int8)
+            white_mask = (indices > 0) & (((indices + 1) // 2) % 2 == 1)
+            players[white_mask] = -1
+            board.reshape(-1)[prefix_moves] = players
         
         # Who is to play at move_idx?
         if move_idx == 0: player_to_move = 1
@@ -406,11 +363,19 @@ class Connect6Dataset(Dataset):
             p_str = policies_list[move_idx]
             if p_str:
                 for item in p_str.split(';'):
-                    k, v = item.split(':')
-                    policy_target[int(k)] = float(v)
+                    try:
+                        k, v = item.split(':', 1)
+                        k, v = int(k), float(v)
+                        if 0 <= k < 361 and np.isfinite(v) and v >= 0:
+                            policy_target[k] = v
+                    except (TypeError, ValueError):
+                        continue
+
+        policy_sum = float(policy_target.sum())
+        if policy_sum <= 0:
+            policy_target[moves[move_idx]] = 1.0
         else:
-            # Should not happen unless log mismatch
-            pass
+            policy_target /= policy_sum
             
         # --- Robust Data Augmentation ---
         # Randomly apply Flip and Rotation (Dihedral Group D4)
@@ -487,8 +452,19 @@ class Connect6Dataset(Dataset):
         return torch.from_numpy(features), torch.tensor(policy_target), torch.tensor(value_target, dtype=torch.float32), torch.tensor(sample_weight, dtype=torch.float32)
 
 def train(args):
+    seed = config.SEED + max(args.generation, 0)
+    seed_everything(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
+    precision, amp_dtype = resolve_precision(device, args.precision)
+
+    if device.type == 'cuda':
+        torch.backends.cuda.matmul.allow_tf32 = bool(config.ALLOW_TF32)
+        torch.backends.cudnn.allow_tf32 = bool(config.ALLOW_TF32)
+        torch.set_float32_matmul_precision('high' if config.ALLOW_TF32 else 'highest')
+        print(f"Training on {torch.cuda.get_device_name(0)} with {precision.upper()} precision")
+    else:
+        print("CUDA is unavailable; training falls back to FP32 on CPU.")
+
     # 1. Data
     if args.data:
         if os.path.isdir(args.data):
@@ -504,18 +480,39 @@ def train(args):
         
     dataset = Connect6Dataset(files)
     if len(dataset) == 0:
-        print("Dataset is empty.")
-        return
-        
-    dataloader = DataLoader(dataset, batch_size=config.BATCH_SIZE_TRAIN, shuffle=True, num_workers=4)
-    
+        raise RuntimeError("Dataset is empty.")
+
+    loader_generator = torch.Generator()
+    loader_generator.manual_seed(seed)
+    num_workers = max(0, int(config.DATALOADER_WORKERS))
+    loader_kwargs = {
+        'dataset': dataset,
+        'batch_size': config.BATCH_SIZE_TRAIN,
+        'shuffle': True,
+        'num_workers': num_workers,
+        'pin_memory': device.type == 'cuda',
+        'worker_init_fn': seed_worker,
+        'generator': loader_generator,
+    }
+    if num_workers > 0:
+        loader_kwargs.update({
+            'persistent_workers': True,
+            'prefetch_factor': config.DATALOADER_PREFETCH_FACTOR,
+        })
+    dataloader = DataLoader(**loader_kwargs)
+
     # 2. Model
     model = C6TransNet(input_planes=17).to(device)
-    
+    checkpoint = None
+
     # Load checkpoint
     if args.resume:
         print(f"Loading checkpoint: {args.resume}")
-        checkpoint = torch.load(args.resume, map_location=device)
+        try:
+            checkpoint = torch.load(args.resume, map_location='cpu', weights_only=True)
+        except TypeError:
+            checkpoint = torch.load(args.resume, map_location='cpu')
+
         # Determine which state_dict to use
         if 'model_state_dict' in checkpoint:
             state_dict = checkpoint['model_state_dict']
@@ -537,48 +534,90 @@ def train(args):
     if torch.cuda.device_count() > 1:
         print(f"Using {torch.cuda.device_count()} GPUs!")
         model = nn.DataParallel(model)
-    
+
     # 3. Optimizer
-    # Separate LR for backbone?
-    optimizer = optim.AdamW(model.parameters(), lr=config.LEARNING_RATE, weight_decay=1e-4)
+    optimizer_kwargs = {
+        'lr': config.LEARNING_RATE,
+        'weight_decay': 1e-4,
+    }
+    if device.type == 'cuda' and config.USE_FUSED_ADAMW:
+        optimizer_kwargs['fused'] = True
+    try:
+        optimizer = optim.AdamW(model.parameters(), **optimizer_kwargs)
+    except (TypeError, RuntimeError) as e:
+        print(f"Fused AdamW unavailable ({e}); using the standard implementation.")
+        optimizer_kwargs.pop('fused', None)
+        optimizer = optim.AdamW(model.parameters(), **optimizer_kwargs)
+
+    if args.resume_optimizer and checkpoint and 'optimizer_state_dict' in checkpoint:
+        try:
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            # Each generation starts a fresh short cosine schedule while retaining
+            # Adam moments from the accepted incumbent.
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = config.LEARNING_RATE
+                param_group['initial_lr'] = config.LEARNING_RATE
+            print("Restored optimizer moments from checkpoint.")
+        except (ValueError, RuntimeError, KeyError) as e:
+            print(f"Optimizer state is incompatible and will be reset: {e}")
+
     # Cosine Annealing Scheduler: Decays from LR to MIN_LR over args.epochs
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=config.MIN_LEARNING_RATE)
-    scaler = torch.cuda.amp.GradScaler()
-    
-    # SwanLab: Don't init here since run_loop.py already initializes it
-    # Just log directly to the existing session
-    # If called standalone, swanlab.log will fail gracefully
-    
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=max(1, args.epochs),
+        eta_min=config.MIN_LEARNING_RATE,
+    )
+    use_grad_scaler = device.type == 'cuda' and precision == 'fp16'
+    scaler = torch.amp.GradScaler('cuda', enabled=use_grad_scaler)
+
+    if config.TORCH_COMPILE and hasattr(torch, 'compile') and not isinstance(model, nn.DataParallel):
+        print("Compiling model with torch.compile...")
+        model = torch.compile(model, mode='max-autotune')
+
     # TensorBoard Writer
-    writer = SummaryWriter(log_dir=config.LOG_DIR)
-    global_step = 0
-    
+    # 数据集分析和 CPU 单测无需安装 TensorBoard；只在真正训练时加载。
+    from torch.utils.tensorboard import SummaryWriter
+
+    run_name = args.run_name or f"gen_{args.generation}"
+    writer = SummaryWriter(log_dir=os.path.join(config.LOG_DIR, 'tensorboard', run_name))
+    global_step = int(checkpoint.get('global_step', 0)) if isinstance(checkpoint, dict) else 0
+
     # 4. Training Loop
     model.train()
-    
-    # 收集每个 epoch 的指标，训练结束后保存到 JSON
+
     all_epoch_metrics = []
+    train_started_at = time.perf_counter()
+    total_samples_seen = 0
+
     for epoch in range(args.epochs):
+        epoch_started_at = time.perf_counter()
         total_loss = 0
         total_policy_loss = 0
         total_value_loss = 0
         total_acc1 = 0
         total_acc5 = 0
         total_entropy = 0
+        total_value_mae = 0
         batch_count = 0
-        
+
         pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{args.epochs}")
-        
+
         for features, policy_target, value_target, sample_weights in pbar:
-            features = features.to(device)
-            policy_target = policy_target.to(device)
-            value_target = value_target.to(device).unsqueeze(1) # (B, 1)
-            sample_weights = sample_weights.to(device).unsqueeze(1) # (B, 1)
-            
+            features = features.to(device, non_blocking=True)
+            policy_target = policy_target.to(device, non_blocking=True)
+            value_target = value_target.to(device, non_blocking=True).unsqueeze(1)
+            sample_weights = sample_weights.to(device, non_blocking=True).unsqueeze(1)
+
+            optimizer.zero_grad(set_to_none=True)
+
             # Forward
-            with torch.cuda.amp.autocast():
+            with torch.autocast(
+                device_type=device.type,
+                dtype=amp_dtype,
+                enabled=amp_dtype is not None,
+            ):
                 policy_logits, _, value_pred = model(features)
-                
+
                 # Loss
                 # Policy: Focal Loss
                 # Force the model to focus on hard examples (where prediction is wrong)
@@ -594,14 +633,14 @@ def train(args):
                 # Weighted Policy Loss with Focal Term
                 # element_loss = - target * log(probs) * focal_term
                 policy_loss_per_sample = -torch.sum(policy_target * log_probs * focal_term, dim=1)
-                policy_loss = (policy_loss_per_sample * sample_weights.squeeze()).mean()
-                
+                policy_loss = (policy_loss_per_sample * sample_weights.flatten()).mean()
+
                 # Value: Weighted MSE
                 value_loss_per_sample = (value_pred - value_target) ** 2
                 value_loss = (value_loss_per_sample * sample_weights).mean()
                 
                 loss = policy_loss + value_loss
-                
+
                 # Metrics
                 with torch.no_grad():
                     # Top-1 Accuracy
@@ -621,115 +660,137 @@ def train(args):
                     log_probs_metrics = torch.log_softmax(policy_logits, dim=1)
                     entropy = -torch.sum(probs * log_probs_metrics, dim=1).mean()
 
-            optimizer.zero_grad()
             scaler.scale(loss).backward()
-            
-            # Unscale before clipping/norm calc
+
             scaler.unscale_(optimizer)
-            
-            # Calculate Global Gradient Norm
-            total_norm = 0.0
-            for p in model.parameters():
-                if p.grad is not None:
-                    param_norm = p.grad.data.norm(2)
-                    total_norm += param_norm.item() ** 2
-            total_norm = total_norm ** 0.5
-            
-            # Clip Gradients
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            
+            # clip_grad_norm_ already returns the pre-clip norm. The old manual
+            # per-parameter .item() loop forced hundreds of GPU synchronizations.
+            total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
             scaler.step(optimizer)
             scaler.update()
-            
-            total_loss += loss.item()
-            total_policy_loss += policy_loss.item()
-            total_value_loss += value_loss.item()
-            total_acc1 += acc1.item()
-            total_acc5 += acc5.item()
-            total_entropy += entropy.item()
+
+            metric_values = torch.stack([
+                loss.detach().float(),
+                policy_loss.detach().float(),
+                value_loss.detach().float(),
+                acc1.detach().float(),
+                acc5.detach().float(),
+                entropy.detach().float(),
+                value_mae.detach().float(),
+                total_norm.detach().float(),
+            ]).cpu().tolist()
+            (loss_value, policy_loss_value, value_loss_value, acc1_value,
+             acc5_value, entropy_value, value_mae_value, grad_norm_value) = metric_values
+
+            total_loss += loss_value
+            total_policy_loss += policy_loss_value
+            total_value_loss += value_loss_value
+            total_acc1 += acc1_value
+            total_acc5 += acc5_value
+            total_entropy += entropy_value
+            total_value_mae += value_mae_value
             batch_count += 1
-            
-            pbar.set_postfix({
-                'loss': loss.item(), 
-                'p_loss': policy_loss.item(), 
-                'v_loss': value_loss.item(),
-                'acc1': acc1.item()
-            })
-            
-            # Log to TensorBoard and SwanLab
-            writer.add_scalar('Train/Total_Loss', loss.item(), global_step)
-            writer.add_scalar('Train/Policy_Loss', policy_loss.item(), global_step)
-            writer.add_scalar('Train/Value_Loss', value_loss.item(), global_step)
-            writer.add_scalar('Train/Accuracy_Top1', acc1.item(), global_step)
-            
-            safe_swanlab_log({
-                "Train/Total_Loss": loss.item(),
-                "Train/Policy_Loss": policy_loss.item(),
-                "Train/Value_Loss": value_loss.item(),
-                "Train/Accuracy_Top1": acc1.item(),
-                "Train/Accuracy_Top5": acc5.item(),
-                "Train/Value_MAE": value_mae.item(),
-                "Train/Policy_Entropy": entropy.item(),
-                "Train/Global_Grad_Norm": total_norm,
-                "Train/LR": optimizer.param_groups[0]['lr']
-            }, step=global_step)
-            
+            total_samples_seen += features.size(0)
+
+            if batch_count % config.TRAIN_LOG_INTERVAL == 0 or batch_count == 1:
+                pbar.set_postfix({
+                    'loss': f"{loss_value:.3f}",
+                    'p_loss': f"{policy_loss_value:.3f}",
+                    'v_loss': f"{value_loss_value:.3f}",
+                    'acc1': f"{acc1_value:.3f}",
+                })
+                writer.add_scalar('train/total_loss', loss_value, global_step)
+                writer.add_scalar('train/policy_loss', policy_loss_value, global_step)
+                writer.add_scalar('train/value_loss', value_loss_value, global_step)
+                writer.add_scalar('train/accuracy_top1', acc1_value, global_step)
+                writer.add_scalar('train/gradient_norm', grad_norm_value, global_step)
+                writer.add_scalar('train/lr', optimizer.param_groups[0]['lr'], global_step)
+
             global_step += 1
-        
+
         # Step the scheduler at the end of each epoch
-        current_lr = scheduler.get_last_lr()[0]
         scheduler.step()
-        print(f"Epoch {epoch+1} Complete. LR decayed to {current_lr:.2e}")
-            
+        current_lr = scheduler.get_last_lr()[0]
+        n_batches = max(1, batch_count)
+        epoch_seconds = time.perf_counter() - epoch_started_at
+        epoch_metrics = {
+            'epoch': epoch + 1,
+            'loss': total_loss / n_batches,
+            'policy_loss': total_policy_loss / n_batches,
+            'value_loss': total_value_loss / n_batches,
+            'accuracy_top1': total_acc1 / n_batches,
+            'accuracy_top5': total_acc5 / n_batches,
+            'policy_entropy': total_entropy / n_batches,
+            'value_mae': total_value_mae / n_batches,
+            'lr': current_lr,
+            'duration_seconds': epoch_seconds,
+            'samples_per_second': len(dataset) / max(epoch_seconds, 1e-9),
+        }
+        all_epoch_metrics.append(epoch_metrics)
+        print(
+            f"Epoch {epoch+1} complete | loss={epoch_metrics['loss']:.4f} "
+            f"| {epoch_metrics['samples_per_second']:.1f} samples/s | lr={current_lr:.2e}"
+        )
+
     writer.close()
-    
-    # 5. 保存训练指标到 JSON（供 run_loop 统一上传到 SwanLab）
-    import json
-    
-    # 计算最后一个 epoch 的平均指标
-    n_batches = batch_count if batch_count > 0 else 1
-    train_metrics = {
-        'loss': total_loss / n_batches,
-        'policy_loss': total_policy_loss / n_batches,
-        'value_loss': total_value_loss / n_batches,
-        'accuracy_top1': total_acc1 / n_batches,
-        'accuracy_top5': total_acc5 / n_batches,
-        'policy_entropy': total_entropy / n_batches,
+
+    # 5. Save metrics for the parent loop/SwanLab process.
+    training_seconds = time.perf_counter() - train_started_at
+    train_metrics = dict(all_epoch_metrics[-1])
+    train_metrics.update({
         'epochs': args.epochs,
-    }
-    
+        'generation': args.generation,
+        'precision': precision,
+        'seed': seed,
+        'total_duration_seconds': training_seconds,
+        'overall_samples_per_second': total_samples_seen / max(training_seconds, 1e-9),
+        'epoch_metrics': all_epoch_metrics,
+    })
+
     metrics_path = os.path.join(config.LOG_DIR, 'train_metrics.json')
-    with open(metrics_path, 'w') as f:
-        json.dump(train_metrics, f, indent=2)
+    atomic_json_dump(train_metrics, metrics_path)
     print(f"Saved training metrics to {metrics_path}")
-            
-    # 6. 保存模型
-    out_path = os.path.join(config.CHECKPOINT_DIR, 'best.pth')
-    torch.save({
-        'model_state_dict': model.state_dict(),
+
+    # 6. Save a candidate checkpoint. Promotion to best.pth is owned by the
+    # gating loop, so a failed candidate can never overwrite the incumbent.
+    model_to_save = model.module if isinstance(model, nn.DataParallel) else model
+    model_to_save = getattr(model_to_save, '_orig_mod', model_to_save)
+    checkpoint_payload = {
+        'training_state_version': 2,
+        'model_state_dict': model_to_save.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
-    }, out_path)
-    print(f"Saved model to {out_path}")
+        'scheduler_state_dict': scheduler.state_dict(),
+        'scaler_state_dict': scaler.state_dict() if use_grad_scaler else None,
+        'generation': args.generation,
+        'epochs_completed': args.epochs,
+        'global_step': global_step,
+        'precision': precision,
+        'seed': seed,
+        'metrics': train_metrics,
+    }
+    atomic_torch_save(checkpoint_payload, args.output)
+    print(f"Saved candidate model to {args.output}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--resume', type=str, default=config.INITIAL_MODEL_PATH.replace('.engine', '.pth')) 
+    default_resume = config.CURRENT_MODEL_PTH if os.path.exists(config.CURRENT_MODEL_PTH) else config.INITIAL_MODEL_PTH
+    parser.add_argument('--resume', type=str, default=default_resume)
     parser.add_argument('--data', type=str, default=None, help='Path to training data (file or directory)')
     parser.add_argument('--run_name', type=str, default=None, help='Name of the experiment run')
     parser.add_argument('--epochs', type=int, default=config.TRAIN_EPOCHS, help='Number of training epochs')
-    
-    # Note: Initial path is engine, we need PTH for training. 
-    # Assuming the user provides a valid PTH or we find one.
-    # Let's check if best.pth exists in checkpoints, use that.
-    
+    parser.add_argument('--generation', type=int, default=-1)
+    parser.add_argument('--precision', choices=['bf16', 'fp16', 'fp32'], default=config.TRAIN_PRECISION)
+    parser.add_argument('--output', type=str, default=os.path.join(config.CHECKPOINT_DIR, 'candidate.pth'))
+    parser.add_argument(
+        '--resume-optimizer',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Restore Adam moments when the checkpoint contains them.',
+    )
+
     args = parser.parse_args()
-    
-    # 优先使用 checkpoints/best.pth（如果存在）
-    best_pth = os.path.join(config.CHECKPOINT_DIR, 'best.pth')
-    if os.path.exists(best_pth):
-        args.resume = best_pth
-    elif not os.path.exists(args.resume):
-        print(f"Warning: Resume path not found: {args.resume}")
-        print(f"Please provide a valid checkpoint via --resume")
-        
+    if args.resume and not os.path.exists(args.resume):
+        parser.error(f"Resume checkpoint not found: {args.resume}")
+
     train(args)

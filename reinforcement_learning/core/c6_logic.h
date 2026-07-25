@@ -5,6 +5,7 @@
 #include <cstring>
 #include <iostream>
 #include <algorithm>
+#include <cstdint>
 
 // Board Size
 const int BOARD_SIZE = 19;
@@ -21,6 +22,7 @@ public:
     int current_player;
     int stones_in_turn; // Stones played in current turn
     int total_stones;   // Total stones played
+    uint64_t zobrist_hash; // 仅编码棋子布局；轮次信息由缓存键另行混入
 
     Connect6Board() {
         reset();
@@ -31,6 +33,7 @@ public:
         current_player = BLACK; // Black starts
         stones_in_turn = 0;
         total_stones = 0;
+        zobrist_hash = 0;
     }
 
     // Coord conversion
@@ -45,7 +48,15 @@ public:
     // Make move and update state
     void make_move(int move_idx) {
         if (board[move_idx] != EMPTY) return;
-        
+
+        // 用坐标和颜色直接派生稳定随机数，避免维护/初始化全局表。
+        uint64_t key = static_cast<uint64_t>(move_idx * 2 + (current_player == BLACK ? 0 : 1))
+            + 0x9e3779b97f4a7c15ULL;
+        key = (key ^ (key >> 30)) * 0xbf58476d1ce4e5b9ULL;
+        key = (key ^ (key >> 27)) * 0x94d049bb133111ebULL;
+        key ^= key >> 31;
+        zobrist_hash ^= key;
+
         board[move_idx] = current_player;
         stones_in_turn++;
         total_stones++;

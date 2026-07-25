@@ -3,6 +3,47 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
+
+class RelativeAttentionONNXFunction(torch.autograd.Function):
+    """普通 PyTorch 执行保持精确语义，ONNX 导出时替换成自定义节点。"""
+
+    @staticmethod
+    def forward(ctx, query, key, value, bias_table):
+        tokens = query.shape[-2]
+        board_width = 19
+        positions = torch.arange(tokens, device=query.device)
+        row = positions // board_width
+        col = positions % board_width
+        relative_index = (
+            (row[:, None] - row[None, :] + board_width - 1) * (board_width * 2 - 1)
+            + col[:, None]
+            - col[None, :]
+            + board_width
+            - 1
+        )
+        dense_bias = bias_table[relative_index].permute(2, 0, 1).unsqueeze(0)
+        return F.scaled_dot_product_attention(
+            query,
+            key,
+            value,
+            attn_mask=dense_bias.to(dtype=query.dtype),
+            dropout_p=0.0,
+            scale=query.shape[-1] ** -0.5,
+        )
+
+    @staticmethod
+    def symbolic(graph, query, key, value, bias_table):
+        output = graph.op(
+            "nebula::relative_attention",
+            query,
+            key,
+            value,
+            bias_table,
+            plugin_namespace_s="nebula",
+            aot_i=1,
+        )
+        return output.setType(query.type())
+
 # --- 1. 组件: SE-Block ---
 class SEBlock(nn.Module):
     """
@@ -82,6 +123,9 @@ class RelativeGlobalAttention(nn.Module):
         self.relative_position_bias_table = nn.Parameter(
             torch.zeros(self.num_relative_distance, num_heads))  # [2*19-1 * 2*19-1, nH]
 
+        # 只在 TensorRT ONNX 导出阶段开启，不影响训练、checkpoint 或普通推理。
+        self.use_trt_attention_plugin = False
+
         # 生成相对坐标索引
         coords_h = torch.arange(self.window_size)
         coords_w = torch.arange(self.window_size)
@@ -102,17 +146,46 @@ class RelativeGlobalAttention(nn.Module):
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
 
-        q = q * self.scale
-        attn = (q @ k.transpose(-2, -1))
+        if (
+            self.use_trt_attention_plugin
+            and not return_attn
+            and torch.onnx.is_in_onnx_export()
+        ):
+            x = RelativeAttentionONNXFunction.apply(
+                q,
+                k,
+                v,
+                self.relative_position_bias_table.to(dtype=q.dtype),
+            )
+            x = x.transpose(1, 2).reshape(B, N, C)
+            return self.proj(x)
 
-        # Add Relative Position Bias
+        # 构造二维相对位置偏置。训练时优先交给 PyTorch 融合 SDPA，避免
+        # 显式保存 B×H×361×361 的注意力概率矩阵。
         relative_position_bias = self.relative_position_bias_table[self.relative_position_index.view(-1)].view(
             self.window_size * self.window_size, self.window_size * self.window_size, -1)  # Wh*Ww, Wh*Ww, nH
         relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()  # nH, Wh*Ww, Wh*Ww
-        attn = attn + relative_position_bias.unsqueeze(0)
+        relative_position_bias = relative_position_bias.to(dtype=q.dtype).unsqueeze(0)
 
-        attn = attn.softmax(dim=-1)
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        # ONNX/TensorRT 导出继续使用基础算子，训练和普通 PyTorch 推理走
+        # 官方融合内核；需要可视化权重时也回退到显式实现。
+        use_fused_sdpa = not return_attn and not torch.onnx.is_in_onnx_export()
+        if use_fused_sdpa:
+            x = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=relative_position_bias,
+                dropout_p=0.0,
+                scale=self.scale,
+            )
+            attn = None
+        else:
+            attn = (q * self.scale) @ k.transpose(-2, -1)
+            attn = (attn + relative_position_bias).softmax(dim=-1)
+            x = attn @ v
+
+        x = x.transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         
         if return_attn:

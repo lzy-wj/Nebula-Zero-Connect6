@@ -4,6 +4,8 @@ __pycache__/
 *$py.class
 .Python
 env/
+.venv/
+venv/
 build/
 develop-eggs/
 dist/
@@ -20,33 +22,57 @@ wheels/
 .installed.cfg
 *.egg
 
-# C++ / Build (General)
+# C++ / Build
 *.obj
 *.exe
 *.exp
 *.lib
 
-# MCTS Libraries (need to be compiled locally)
+# MCTS Libraries (compile locally)
 *.so
 *.dll
 
-# Models & Data (Too large for git)
+# Models & engines
 *.pth
+*.pt
 *.engine
 *.onnx
 *.weights
-*.pt
+
+# Generated data / runs / logs
+*.csv
+*.log
 data/raw/
 data/buffer/
-checkpoints/
-logs/
+**/checkpoints/
+**/logs/
 swanlog/
+**/runtime/
+experiments/**/runs/
+experiments/**/output/
+experiments/**/replay/
+reinforcement_learning/data/
+supervised_learning/output/
+supervised_learning/data/processed/
+final/results/*
+!final/results/.gitkeep
+tensorrt_timing.cache
 tournament_state.json
 
-# IDE
+# Machine-local ops (never publish)
+H20_HANDOFF.md
+**/run_h20.sh
+**/run_h20_balance.sh
+**/run_a800.sh
+**/run_web_h20.sh
+**/run_web_latest.sh
+**/run_local_smoke.sh
+**/run_fast_a800.sh
+**/run_fast_bridge_a800.sh
+**/run_fast_phase2_a800.sh
+
+# IDE / OS
 .vscode/
 .idea/
 *.swp
-
-# OS
 .DS_Store

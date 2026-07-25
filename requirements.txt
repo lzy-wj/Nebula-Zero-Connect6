@@ -1,18 +1,26 @@
-torch
-torchvision
-numpy
-pandas
-onnx
-onnxruntime-gpu
-tensorrt
-tqdm
-psutil
-Flask
-PyQt5
-matplotlib
-seaborn
-tensorboard
-swanlab
-requests
-pyyaml
-protobuf
+# 已在 NVIDIA Driver 570 / CUDA 12.8 / Python 3.10 上验证。
+# PyTorch 的 CUDA 12.8 wheel 位于官方独立索引。
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+torch==2.11.0+cu128
+torchvision==0.26.0+cu128
+numpy==2.2.6
+pandas==2.3.3
+onnx==1.22.0
+onnxruntime-gpu==1.23.2
+
+# 不要改回通用 tensorrt；当前通用包默认会选择 CUDA 13 变体。
+tensorrt-cu12==11.1.0.106
+
+tqdm==4.68.4
+psutil==7.2.2
+Flask==3.1.3
+PyQt5==5.15.11
+matplotlib==3.10.9
+seaborn==0.13.2
+tensorboard==2.21.0
+swanlab==0.8.4
+requests==2.34.2
+PyYAML==6.0.3
+protobuf==6.33.6
+pillow==12.2.0

@@ -102,17 +102,30 @@ class RelativeGlobalAttention(nn.Module):
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
 
-        q = q * self.scale
-        attn = (q @ k.transpose(-2, -1))
-
-        # Add Relative Position Bias
+        # 构造二维相对位置偏置。训练时优先使用 PyTorch 融合 SDPA，避免
+        # 显式保存完整注意力概率矩阵。
         relative_position_bias = self.relative_position_bias_table[self.relative_position_index.view(-1)].view(
             self.window_size * self.window_size, self.window_size * self.window_size, -1)  # Wh*Ww, Wh*Ww, nH
         relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()  # nH, Wh*Ww, Wh*Ww
-        attn = attn + relative_position_bias.unsqueeze(0)
+        relative_position_bias = relative_position_bias.to(dtype=q.dtype).unsqueeze(0)
 
-        attn = attn.softmax(dim=-1)
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        use_fused_sdpa = not return_attn and not torch.onnx.is_in_onnx_export()
+        if use_fused_sdpa:
+            x = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=relative_position_bias,
+                dropout_p=0.0,
+                scale=self.scale,
+            )
+            attn = None
+        else:
+            attn = (q * self.scale) @ k.transpose(-2, -1)
+            attn = (attn + relative_position_bias).softmax(dim=-1)
+            x = attn @ v
+
+        x = x.transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         return x
 

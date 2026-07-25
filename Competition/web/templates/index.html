@@ -1,695 +1,2206 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>Nebula Zero - Connect6 AI</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#111b2d">
+    <title>Nebula Zero · 六子棋对弈台</title>
     <style>
         :root {
-            --primary: #2196f3;
-            --primary-dark: #1976d2;
-            --accent: #ff9800;
-            --bg: #f4f7f6;
-            --card-bg: #ffffff;
-            --text: #333333;
-            --sidebar-width: 320px;
+            color-scheme: light;
+            --ink-950: #101828;
+            --ink-800: #29354a;
+            --ink-600: #5d687b;
+            --ink-500: #7b8494;
+            --line: #e7e9ed;
+            --line-strong: #d9dde4;
+            --surface: #ffffff;
+            --surface-soft: #f7f8fa;
+            --page: #edf0f4;
+            --navy: #111b2d;
+            --blue: #245bd7;
+            --blue-dark: #1747b3;
+            --blue-soft: #edf3ff;
+            --green: #16845b;
+            --green-soft: #e9f7f1;
+            --amber: #b46d12;
+            --amber-soft: #fff5e5;
+            --red: #c74343;
+            --red-soft: #fff0ef;
+            --wood: #d9ac6a;
+            --radius-lg: 22px;
+            --radius-md: 14px;
+            --shadow: 0 20px 60px rgba(24, 34, 52, 0.10);
         }
-        
-        body { 
-            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; 
-            background: var(--bg); 
-            margin: 0; 
-            display: flex; 
-            justify-content: center; 
-            align-items: center; 
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html {
+            min-width: 320px;
+            background: var(--page);
+        }
+
+        body {
+            margin: 0;
             min-height: 100vh;
-            color: var(--text);
-        }
-        
-        #app-container {
-            display: flex;
-            gap: 30px;
-            padding: 20px;
-            background: white;
-            border-radius: 16px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-            max-width: 1200px;
-            width: 100%;
+            color: var(--ink-950);
+            background:
+                radial-gradient(circle at 12% 0%, rgba(36, 91, 215, 0.10), transparent 28rem),
+                radial-gradient(circle at 94% 12%, rgba(22, 132, 91, 0.08), transparent 25rem),
+                var(--page);
+            font-family: Inter, "SF Pro Display", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+            -webkit-font-smoothing: antialiased;
         }
 
-        #canvas-wrapper {
-            position: relative;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
-            border-radius: 4px;
-            overflow: hidden;
+        button,
+        input,
+        select {
+            font: inherit;
         }
 
-        canvas { 
-            background: #e3c98d; 
-            cursor: crosshair; 
-            display: block;
+        button {
+            border: 0;
         }
 
-        #sidebar { 
-            width: var(--sidebar-width); 
-            display: flex; 
-            flex-direction: column; 
-            gap: 15px; 
-            height: 700px;
-            overflow-y: auto;
-            padding-right: 5px;
-        }
-        
-        h1 {
-            font-size: 24px;
-            margin: 0 0 10px 0;
-            color: #2c3e50;
-            border-bottom: 2px solid var(--primary);
-            padding-bottom: 10px;
+        .app {
+            width: min(1500px, 100%);
+            margin: 0 auto;
+            padding: 24px;
         }
 
-        .card { 
-            background: var(--card-bg); 
-            padding: 15px; 
-            border-radius: 8px; 
-            border: 1px solid #eee;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
-        }
-        
-        .card-header {
-            font-weight: 600;
-            margin-bottom: 10px;
-            color: #555;
+        .topbar {
             display: flex;
             align-items: center;
-            gap: 8px;
+            justify-content: space-between;
+            gap: 24px;
+            margin-bottom: 18px;
+            padding: 0 4px;
         }
-        
-        .card-header i { color: var(--primary); }
 
-        .stat-row { 
-            display: flex; 
-            justify-content: space-between; 
-            margin-bottom: 8px; 
-            font-size: 14px;
-        }
-        
-        .stat-label { color: #7f8c8d; }
-        .stat-value { font-weight: 700; color: #2c3e50; }
-        
-        .control-group { margin-bottom: 10px; }
-        .control-group label { display: block; font-size: 12px; color: #666; margin-bottom: 4px; }
-        
-        input, select { 
-            width: 100%; 
-            padding: 8px; 
-            border: 1px solid #ddd; 
-            border-radius: 6px; 
-            box-sizing: border-box; 
-            font-size: 13px;
-            transition: border 0.2s;
-        }
-        
-        input:focus, select:focus {
-            border-color: var(--primary);
-            outline: none;
-        }
-        
-        .btn-group { display: flex; gap: 10px; margin-top: 5px; }
-        
-        button { 
-            flex: 1;
-            padding: 12px; 
-            border: none; 
-            border-radius: 6px; 
-            cursor: pointer; 
-            font-weight: 600; 
-            transition: all 0.2s;
+        .brand {
             display: flex;
-            justify-content: center;
+            align-items: center;
+            min-width: 0;
+            gap: 13px;
+        }
+
+        .brand-mark {
+            display: grid;
+            width: 42px;
+            height: 42px;
+            flex: 0 0 auto;
+            place-items: center;
+            border-radius: 13px;
+            color: #fff;
+            background:
+                radial-gradient(circle at 66% 30%, #7ba6ff 0 4%, transparent 5%),
+                linear-gradient(145deg, #263d70, #101828);
+            box-shadow: 0 8px 24px rgba(16, 24, 40, 0.22);
+        }
+
+        .brand-mark::before {
+            width: 16px;
+            height: 16px;
+            content: "";
+            border: 2px solid rgba(255, 255, 255, 0.86);
+            border-radius: 50%;
+            box-shadow: 8px -5px 0 -5px #fff, -7px 7px 0 -5px #fff;
+        }
+
+        .brand-copy {
+            min-width: 0;
+        }
+
+        .brand-copy h1 {
+            margin: 0;
+            font-size: clamp(20px, 2vw, 26px);
+            font-weight: 760;
+            letter-spacing: -0.02em;
+        }
+
+        .brand-copy p {
+            overflow: hidden;
+            margin: 2px 0 0;
+            color: var(--ink-600);
+            font-size: 13px;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .header-status {
+            display: flex;
+            align-items: center;
+            max-width: 45%;
+            gap: 9px;
+            padding: 9px 13px;
+            border: 1px solid rgba(255, 255, 255, 0.8);
+            border-radius: 999px;
+            color: var(--ink-600);
+            background: rgba(255, 255, 255, 0.72);
+            box-shadow: 0 5px 18px rgba(24, 34, 52, 0.05);
+            font-size: 12px;
+            backdrop-filter: blur(12px);
+        }
+
+        .header-status strong {
+            overflow: hidden;
+            color: var(--ink-800);
+            font-weight: 650;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            flex: 0 0 auto;
+            border-radius: 50%;
+            background: var(--green);
+            box-shadow: 0 0 0 4px rgba(22, 132, 91, 0.12);
+        }
+
+        .status-dot.thinking {
+            background: #e39224;
+            box-shadow: 0 0 0 4px rgba(227, 146, 36, 0.14);
+            animation: pulse 1.15s ease-in-out infinite;
+        }
+
+        .status-dot.error {
+            background: var(--red);
+            box-shadow: 0 0 0 4px rgba(199, 67, 67, 0.12);
+        }
+
+        .workspace {
+            display: grid;
+            grid-template-columns: minmax(560px, 1fr) 390px;
+            align-items: start;
+            gap: 18px;
+        }
+
+        .panel {
+            border: 1px solid rgba(255, 255, 255, 0.88);
+            border-radius: var(--radius-lg);
+            background: rgba(255, 255, 255, 0.90);
+            box-shadow: var(--shadow);
+            backdrop-filter: blur(16px);
+        }
+
+        .board-panel {
+            min-width: 0;
+            padding: 17px;
+        }
+
+        .board-toolbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 18px;
+            padding: 1px 3px 15px;
+        }
+
+        .turn-block {
+            display: flex;
+            align-items: center;
+            min-width: 0;
+            gap: 11px;
+        }
+
+        .stone-symbol {
+            width: 32px;
+            height: 32px;
+            flex: 0 0 auto;
+            border: 1px solid rgba(0, 0, 0, 0.28);
+            border-radius: 50%;
+            background: radial-gradient(circle at 34% 30%, #555, #080808 70%);
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.22);
+        }
+
+        .stone-symbol.white {
+            border-color: #b9bec7;
+            background: radial-gradient(circle at 34% 30%, #fff, #e8e9ec 72%);
+            box-shadow: 0 4px 10px rgba(26, 35, 50, 0.13);
+        }
+
+        .turn-copy {
+            min-width: 0;
+        }
+
+        .turn-label {
+            display: block;
+            margin-bottom: 2px;
+            color: var(--ink-500);
+            font-size: 11px;
+            font-weight: 650;
+            letter-spacing: 0.08em;
+        }
+
+        .turn-value {
+            display: block;
+            overflow: hidden;
+            font-size: 15px;
+            font-weight: 720;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .board-meta {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            color: var(--ink-600);
+            font-size: 12px;
+        }
+
+        .meta-chip {
+            padding: 6px 9px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: var(--surface-soft);
+            white-space: nowrap;
+        }
+
+        .board-frame {
+            position: relative;
+            overflow: hidden;
+            width: 100%;
+            border: 1px solid rgba(76, 52, 26, 0.34);
+            border-radius: 16px;
+            background: var(--wood);
+            box-shadow:
+                inset 0 0 0 1px rgba(255, 255, 255, 0.35),
+                0 14px 36px rgba(71, 47, 23, 0.16);
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: auto;
+            aspect-ratio: 1;
+            cursor: crosshair;
+            touch-action: manipulation;
+        }
+
+        canvas.busy {
+            cursor: wait;
+        }
+
+        canvas:focus-visible {
+            outline: 3px solid rgba(36, 91, 215, 0.45);
+            outline-offset: -4px;
+        }
+
+        .board-footer {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
+            padding: 13px 4px 1px;
+            color: var(--ink-600);
+            font-size: 12px;
+        }
+
+        .legend {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .legend span {
+            display: inline-flex;
             align-items: center;
             gap: 6px;
         }
-        
-        #btn-ai { background: var(--primary); color: white; }
-        #btn-ai:hover { background: var(--primary-dark); transform: translateY(-1px); }
-        #btn-ai:active { transform: translateY(0); }
-        
-        #btn-reset { background: #ff5252; color: white; }
-        #btn-reset:hover { background: #ff1744; }
 
-        #log-container {
-            flex-grow: 1;
-            background: #1e1e1e;
-            color: #00ff9d;
-            padding: 10px;
-            border-radius: 6px;
-            font-family: 'Consolas', monospace;
+        .legend-dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            background: #151515;
+        }
+
+        .legend-dot.white {
+            border: 1px solid #aab0ba;
+            background: #fff;
+        }
+
+        .legend-dot.last {
+            border: 2px solid #f36f32;
+            background: transparent;
+        }
+
+        .sidebar {
+            display: flex;
+            min-width: 0;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .card {
+            overflow: hidden;
+            border: 1px solid var(--line);
+            border-radius: var(--radius-md);
+            background: var(--surface);
+        }
+
+        .card-body {
+            padding: 16px;
+        }
+
+        .card-title {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 14px;
+        }
+
+        .card-title h2 {
+            margin: 0;
+            font-size: 14px;
+            font-weight: 740;
+            letter-spacing: -0.01em;
+        }
+
+        .card-title p {
+            margin: 3px 0 0;
+            color: var(--ink-500);
             font-size: 11px;
-            overflow-y: auto;
-            min-height: 150px;
+            line-height: 1.45;
         }
-        
-        .log-entry { margin-bottom: 2px; }
-        .log-time { color: #666; margin-right: 5px; }
-        
-        .debug-item { 
-            display: flex; 
-            justify-content: space-between; 
-            padding: 6px 0; 
-            border-bottom: 1px solid #f0f0f0;
+
+        .state-banner {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 14px 16px;
+            color: #fff;
+            background: linear-gradient(135deg, #182641, #101827);
+        }
+
+        .state-banner small {
+            display: block;
+            margin-bottom: 4px;
+            color: rgba(255, 255, 255, 0.62);
+            font-size: 10px;
+            font-weight: 650;
+            letter-spacing: 0.08em;
+        }
+
+        .state-banner strong {
+            font-size: 15px;
+            font-weight: 680;
+        }
+
+        .state-metrics {
+            display: flex;
+            flex: 0 0 auto;
+            gap: 18px;
+            text-align: right;
+        }
+
+        .metric span {
+            display: block;
+            margin-top: 2px;
+            font-size: 14px;
+            font-weight: 720;
+        }
+
+        .field {
+            margin-bottom: 13px;
+        }
+
+        .field:last-child {
+            margin-bottom: 0;
+        }
+
+        .field-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        label,
+        .field-label {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 6px;
+            color: var(--ink-600);
+            font-size: 11px;
+            font-weight: 650;
+        }
+
+        .field-hint {
+            color: var(--ink-500);
+            font-weight: 500;
+        }
+
+        select,
+        input[type="number"] {
+            width: 100%;
+            height: 40px;
+            padding: 0 11px;
+            border: 1px solid var(--line-strong);
+            border-radius: 9px;
+            outline: none;
+            color: var(--ink-950);
+            background: #fff;
             font-size: 13px;
+            transition: border-color 160ms ease, box-shadow 160ms ease;
         }
-        .debug-prob { color: var(--primary); font-weight: bold; }
-        .debug-coord { font-family: monospace; background: #eee; padding: 1px 4px; border-radius: 3px;}
 
-        /* Loader */
+        select:focus,
+        input[type="number"]:focus {
+            border-color: var(--blue);
+            box-shadow: 0 0 0 3px rgba(36, 91, 215, 0.11);
+        }
+
+        select:disabled,
+        input:disabled {
+            color: var(--ink-500);
+            background: var(--surface-soft);
+            cursor: not-allowed;
+        }
+
+        .presets {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 6px;
+            margin-top: 7px;
+        }
+
+        .preset {
+            padding: 7px 8px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            color: var(--ink-600);
+            background: var(--surface-soft);
+            font-size: 11px;
+            font-weight: 650;
+            cursor: pointer;
+            transition: 150ms ease;
+        }
+
+        .preset:hover,
+        .preset.active {
+            border-color: rgba(36, 91, 215, 0.35);
+            color: var(--blue);
+            background: var(--blue-soft);
+        }
+
+        details {
+            border-top: 1px solid var(--line);
+        }
+
+        summary {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 13px 16px;
+            color: var(--ink-600);
+            font-size: 12px;
+            font-weight: 680;
+            list-style: none;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        summary::-webkit-details-marker {
+            display: none;
+        }
+
+        summary::after {
+            content: "＋";
+            color: var(--ink-500);
+            font-size: 16px;
+            font-weight: 400;
+        }
+
+        details[open] summary::after {
+            content: "−";
+        }
+
+        .details-body {
+            padding: 0 16px 15px;
+        }
+
+        .help-text {
+            margin: 10px 0 0;
+            color: var(--ink-500);
+            font-size: 11px;
+            line-height: 1.55;
+        }
+
+        .actions {
+            display: grid;
+            grid-template-columns: 1.7fr 1fr;
+            gap: 9px;
+        }
+
+        .tool-actions {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 7px;
+            margin-top: 8px;
+        }
+
+        .tool-btn {
+            min-height: 34px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            color: var(--ink-600);
+            background: var(--surface-soft);
+            font-size: 11px;
+            font-weight: 650;
+            cursor: pointer;
+            transition: 150ms ease;
+        }
+
+        .tool-btn:hover:not(:disabled) {
+            border-color: rgba(36, 91, 215, 0.32);
+            color: var(--blue);
+            background: var(--blue-soft);
+        }
+
+        .tool-btn:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
+
+        .search-summary {
+            margin: 11px 1px 0;
+            color: var(--ink-500);
+            font-size: 10px;
+            line-height: 1.5;
+            text-align: center;
+        }
+
+        .search-progress {
+            display: none;
+            margin-bottom: 12px;
+            padding: 10px 11px;
+            border: 1px solid #dce5fa;
+            border-radius: 9px;
+            background: #f5f8ff;
+        }
+
+        .search-progress.visible {
+            display: block;
+        }
+
+        .progress-copy {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 7px;
+            color: var(--ink-600);
+            font-size: 10px;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .progress-copy strong {
+            color: var(--blue);
+            font-size: 11px;
+        }
+
+        .progress-track {
+            overflow: hidden;
+            height: 6px;
+            border-radius: 999px;
+            background: #dfe8fa;
+        }
+
+        .progress-bar {
+            width: 0;
+            height: 100%;
+            border-radius: inherit;
+            background: linear-gradient(90deg, #245bd7, #73a0ff);
+            transition: width 220ms ease;
+        }
+
+        .progress-detail {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+            margin-top: 7px;
+            color: var(--ink-500);
+            font-size: 9px;
+        }
+
+        .play-mode {
+            display: grid;
+            grid-template-columns: 1fr 112px;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 11px;
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            background: var(--surface-soft);
+        }
+
+        .toggle-copy {
+            display: flex;
+            align-items: center;
+            min-width: 0;
+            gap: 9px;
+            cursor: pointer;
+        }
+
+        .toggle-copy input {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .switch {
+            position: relative;
+            width: 34px;
+            height: 20px;
+            flex: 0 0 auto;
+            border-radius: 999px;
+            background: #cbd1da;
+            transition: background 160ms ease;
+        }
+
+        .switch::after {
+            position: absolute;
+            top: 3px;
+            left: 3px;
+            width: 14px;
+            height: 14px;
+            content: "";
+            border-radius: 50%;
+            background: #fff;
+            box-shadow: 0 1px 4px rgba(16, 24, 40, 0.25);
+            transition: transform 160ms ease;
+        }
+
+        .toggle-copy input:checked + .switch {
+            background: var(--blue);
+        }
+
+        .toggle-copy input:checked + .switch::after {
+            transform: translateX(14px);
+        }
+
+        .toggle-copy input:focus-visible + .switch {
+            outline: 3px solid rgba(36, 91, 215, 0.18);
+            outline-offset: 2px;
+        }
+
+        .toggle-text strong,
+        .toggle-text small {
+            display: block;
+        }
+
+        .toggle-text strong {
+            color: var(--ink-800);
+            font-size: 11px;
+        }
+
+        .toggle-text small {
+            margin-top: 2px;
+            color: var(--ink-500);
+            font-size: 9px;
+        }
+
+        .play-mode select {
+            height: 34px;
+            padding: 0 8px;
+            font-size: 11px;
+        }
+
+        .btn {
+            display: inline-flex;
+            min-height: 44px;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            border-radius: 10px;
+            font-size: 13px;
+            font-weight: 720;
+            cursor: pointer;
+            transition: transform 150ms ease, background 150ms ease, box-shadow 150ms ease;
+        }
+
+        .btn:hover:not(:disabled) {
+            transform: translateY(-1px);
+        }
+
+        .btn:active:not(:disabled) {
+            transform: translateY(0);
+        }
+
+        .btn:focus-visible {
+            outline: 3px solid rgba(36, 91, 215, 0.22);
+            outline-offset: 2px;
+        }
+
+        .btn:disabled {
+            opacity: 0.52;
+            cursor: not-allowed;
+        }
+
+        .btn-primary {
+            color: #fff;
+            background: var(--blue);
+            box-shadow: 0 8px 20px rgba(36, 91, 215, 0.22);
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            background: var(--blue-dark);
+            box-shadow: 0 10px 24px rgba(36, 91, 215, 0.28);
+        }
+
+        .btn-secondary {
+            border: 1px solid var(--line-strong);
+            color: var(--ink-800);
+            background: #fff;
+        }
+
+        .btn-secondary:hover:not(:disabled) {
+            color: var(--red);
+            background: var(--red-soft);
+        }
+
         .spinner {
-            width: 16px;
-            height: 16px;
-            border: 2px solid #ffffff;
-            border-top: 2px solid transparent;
+            width: 15px;
+            height: 15px;
+            border: 2px solid rgba(255, 255, 255, 0.38);
+            border-top-color: #fff;
             border-radius: 50%;
-            animation: spin 1s linear infinite;
+            animation: spin 800ms linear infinite;
         }
-        @keyframes spin { 100% { transform: rotate(360deg); } }
-        
-        /* Status Indicators */
-        .status-dot {
-            height: 10px;
-            width: 10px;
-            background-color: #bbb;
-            border-radius: 50%;
-            display: inline-block;
-            margin-right: 5px;
-        }
-        .status-active { background-color: #4caf50; box-shadow: 0 0 5px #4caf50; }
-        .status-thinking { background-color: #ff9800; animation: pulse 1s infinite; }
-        
-        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
 
+        .analysis-empty {
+            padding: 24px 10px;
+            color: var(--ink-500);
+            font-size: 12px;
+            line-height: 1.6;
+            text-align: center;
+        }
+
+        .history-list {
+            overflow-y: auto;
+            max-height: 230px;
+            margin: -2px -4px 0;
+            padding: 0 4px;
+            scrollbar-width: thin;
+        }
+
+        .history-empty {
+            padding: 18px 6px 8px;
+            color: var(--ink-500);
+            font-size: 11px;
+            text-align: center;
+        }
+
+        .history-row {
+            display: grid;
+            grid-template-columns: 34px 18px 1fr;
+            align-items: center;
+            gap: 7px;
+            min-height: 30px;
+            border-bottom: 1px solid #f0f1f3;
+            font-size: 11px;
+        }
+
+        .history-row:last-child {
+            border-bottom: 0;
+        }
+
+        .history-index {
+            color: var(--ink-500);
+            font-variant-numeric: tabular-nums;
+        }
+
+        .history-stone {
+            width: 11px;
+            height: 11px;
+            border: 1px solid rgba(0, 0, 0, 0.25);
+            border-radius: 50%;
+            background: #151515;
+        }
+
+        .history-stone.white {
+            border-color: #aeb4be;
+            background: #fff;
+        }
+
+        .history-coordinate {
+            font-family: "SFMono-Regular", Consolas, monospace;
+            font-weight: 680;
+        }
+
+        .move-analysis {
+            display: grid;
+            grid-template-columns: 42px 1fr 48px;
+            align-items: center;
+            gap: 9px;
+            min-height: 32px;
+        }
+
+        .move-coordinate {
+            font-family: "SFMono-Regular", Consolas, monospace;
+            font-size: 12px;
+            font-weight: 720;
+        }
+
+        .prob-track {
+            overflow: hidden;
+            height: 6px;
+            border-radius: 999px;
+            background: #edf0f4;
+        }
+
+        .prob-bar {
+            height: 100%;
+            border-radius: inherit;
+            background: linear-gradient(90deg, #245bd7, #76a1ff);
+        }
+
+        .prob-value {
+            color: var(--ink-600);
+            font-variant-numeric: tabular-nums;
+            font-size: 11px;
+            font-weight: 680;
+            text-align: right;
+        }
+
+        .log-list {
+            overflow-y: auto;
+            max-height: 140px;
+            padding: 0 16px 14px;
+            scrollbar-width: thin;
+        }
+
+        .log-entry {
+            display: grid;
+            grid-template-columns: 56px 1fr;
+            gap: 8px;
+            padding: 4px 0;
+            color: var(--ink-600);
+            font-family: "SFMono-Regular", Consolas, monospace;
+            font-size: 10px;
+            line-height: 1.45;
+        }
+
+        .log-time {
+            color: var(--ink-500);
+        }
+
+        .notice {
+            display: none;
+            margin-top: 11px;
+            padding: 9px 10px;
+            border-radius: 8px;
+            color: var(--amber);
+            background: var(--amber-soft);
+            font-size: 11px;
+            line-height: 1.45;
+        }
+
+        .notice.visible {
+            display: block;
+        }
+
+        .toast {
+            position: fixed;
+            z-index: 20;
+            right: 24px;
+            bottom: 24px;
+            max-width: min(390px, calc(100vw - 32px));
+            padding: 12px 15px;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 11px;
+            color: #fff;
+            background: rgba(16, 24, 40, 0.94);
+            box-shadow: 0 16px 44px rgba(16, 24, 40, 0.28);
+            font-size: 12px;
+            line-height: 1.5;
+            opacity: 0;
+            pointer-events: none;
+            transform: translateY(10px);
+            transition: opacity 180ms ease, transform 180ms ease;
+            backdrop-filter: blur(12px);
+        }
+
+        .toast.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        .toast.error {
+            background: rgba(129, 34, 34, 0.96);
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        @keyframes pulse {
+            50% { opacity: 0.42; }
+        }
+
+        @media (max-width: 1080px) {
+            .app {
+                max-width: 850px;
+            }
+
+            .workspace {
+                grid-template-columns: 1fr;
+            }
+
+            .sidebar {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                align-items: start;
+            }
+
+            .status-card,
+            .settings-card {
+                grid-column: span 1;
+            }
+        }
+
+        @media (max-width: 700px) {
+            .app {
+                padding: 12px;
+            }
+
+            .topbar {
+                margin-bottom: 12px;
+            }
+
+            .header-status {
+                max-width: none;
+                padding: 8px;
+            }
+
+            .header-status .status-label {
+                display: none;
+            }
+
+            .workspace {
+                gap: 12px;
+            }
+
+            .board-panel {
+                padding: 10px;
+                border-radius: 16px;
+            }
+
+            .board-toolbar {
+                padding: 3px 2px 11px;
+            }
+
+            .board-meta .meta-chip:first-child {
+                display: none;
+            }
+
+            .board-footer {
+                align-items: flex-start;
+                flex-direction: column;
+                gap: 8px;
+            }
+
+            .sidebar {
+                display: flex;
+            }
+
+            .toast {
+                right: 16px;
+                bottom: 16px;
+                left: 16px;
+                max-width: none;
+            }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            *,
+            *::before,
+            *::after {
+                scroll-behavior: auto !important;
+                animation-duration: 0.01ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.01ms !important;
+            }
+        }
     </style>
 </head>
 <body>
+<main class="app">
+    <header class="topbar">
+        <div class="brand">
+            <div class="brand-mark" aria-hidden="true"></div>
+            <div class="brand-copy">
+                <h1>Nebula Zero</h1>
+                <p>六子棋人机对弈与搜索分析台</p>
+            </div>
+        </div>
+        <div class="header-status" title="当前服务状态">
+            <span id="header-status-dot" class="status-dot"></span>
+            <span class="status-label">服务状态</span>
+            <strong id="header-status-text">正在连接</strong>
+        </div>
+    </header>
 
-<div id="app-container">
-    <!-- Game Board -->
-    <div id="canvas-wrapper">
-        <canvas id="board" width="760" height="760"></canvas>
+    <div class="workspace">
+        <section class="panel board-panel" aria-label="六子棋棋盘">
+            <div class="board-toolbar">
+                <div class="turn-block">
+                    <span id="turn-stone" class="stone-symbol" aria-hidden="true"></span>
+                    <div class="turn-copy">
+                        <span class="turn-label">当前落子方</span>
+                        <span id="turn-text" class="turn-value">黑方 · 首手一子</span>
+                    </div>
+                </div>
+                <div class="board-meta">
+                    <span class="meta-chip">19 × 19</span>
+                    <span id="move-count" class="meta-chip">第 0 手</span>
+                </div>
+            </div>
+
+            <div class="board-frame">
+                <canvas id="board" width="800" height="800" tabindex="0"
+                        aria-label="19 乘 19 六子棋棋盘，点击交叉点落子"></canvas>
+            </div>
+
+            <div class="board-footer">
+                <div class="legend" aria-label="棋盘图例">
+                    <span><i class="legend-dot"></i>黑方</span>
+                    <span><i class="legend-dot white"></i>白方</span>
+                    <span><i class="legend-dot last"></i>最后一手</span>
+                </div>
+                <span id="board-hint">点击空白交叉点落子</span>
+            </div>
+        </section>
+
+        <aside class="sidebar" aria-label="对局控制台">
+            <section class="card status-card">
+                <div class="state-banner">
+                    <div>
+                        <small>对局状态</small>
+                        <strong id="game-status">等待落子</strong>
+                    </div>
+                    <div class="state-metrics">
+                        <div class="metric">
+                            <small>局面胜率</small>
+                            <span id="win-rate">--</span>
+                        </div>
+                        <div class="metric">
+                            <small>搜索耗时</small>
+                            <span id="compute-time">--</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div id="search-progress" class="search-progress" aria-live="polite">
+                        <div class="progress-copy">
+                            <strong id="progress-title">正在建立搜索树</strong>
+                            <span id="progress-percent">0%</span>
+                        </div>
+                        <div class="progress-track">
+                            <div id="progress-bar" class="progress-bar"></div>
+                        </div>
+                        <div class="progress-detail">
+                            <span id="progress-count">0 / 800 次模拟</span>
+                            <span id="progress-elapsed">0.0 秒</span>
+                        </div>
+                    </div>
+                    <div class="actions">
+                        <button id="btn-ai" class="btn btn-primary" type="button">
+                            <span id="btn-ai-icon" aria-hidden="true">✦</span>
+                            <span id="btn-ai-text">让 AI 落子</span>
+                        </button>
+                        <button id="btn-reset" class="btn btn-secondary" type="button">重新开局</button>
+                    </div>
+                    <div class="tool-actions">
+                        <button id="btn-undo" class="tool-btn" type="button">悔棋</button>
+                        <button id="btn-export" class="tool-btn" type="button">导出棋谱</button>
+                        <button id="btn-import" class="tool-btn" type="button">导入棋谱</button>
+                        <input id="record-file" type="file" accept=".json,application/json" hidden>
+                    </div>
+                    <div id="search-summary" class="search-summary">当前：800 次模拟 · Batch 32 · 4 线程</div>
+                    <div id="engine-notice" class="notice" role="status"></div>
+                </div>
+            </section>
+
+            <section class="card settings-card">
+                <div class="card-body">
+                    <div class="card-title">
+                        <div>
+                            <h2>搜索设置</h2>
+                            <p>修改后会在下一次 AI 落子时生效</p>
+                        </div>
+                    </div>
+
+                    <div class="field">
+                        <span class="field-label">对弈方式</span>
+                        <div class="play-mode">
+                            <label class="toggle-copy" for="auto-response">
+                                <input id="auto-response" type="checkbox">
+                                <span class="switch" aria-hidden="true"></span>
+                                <span class="toggle-text">
+                                    <strong>AI 自动应手</strong>
+                                    <small>关闭后可手动调用 AI</small>
+                                </span>
+                            </label>
+                            <select id="human-side" aria-label="选择玩家执棋颜色">
+                                <option value="1">我执黑</option>
+                                <option value="-1">我执白</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="field">
+                        <label for="model-select">
+                            <span>对弈模型</span>
+                            <span id="model-size" class="field-hint"></span>
+                        </label>
+                        <select id="model-select" aria-label="选择 TensorRT 对弈模型">
+                            <option value="">正在读取模型…</option>
+                        </select>
+                    </div>
+
+                    <div class="field">
+                        <label for="sims">
+                            <span>MCTS 搜索预算</span>
+                            <span class="field-hint">总模拟次数</span>
+                        </label>
+                        <input id="sims" type="number" value="800" min="1" max="100000" step="100">
+                        <div class="presets" aria-label="搜索次数快捷设置">
+                            <button class="preset" type="button" data-sims="400">快速 · 400</button>
+                            <button class="preset active" type="button" data-sims="800">标准 · 800</button>
+                            <button class="preset" type="button" data-sims="1200">深入 · 1200</button>
+                        </div>
+                        <p class="help-text">搜索深度由局面与树动态决定；提高模拟次数会让搜索自然走得更深、更稳定。</p>
+                    </div>
+
+                    <div class="field">
+                        <label for="temp">
+                            <span>落子温度</span>
+                            <span class="field-hint">越低越确定</span>
+                        </label>
+                        <input id="temp" type="number" value="0.1" min="0" max="2" step="0.1">
+                    </div>
+                </div>
+
+                <details>
+                    <summary>性能参数</summary>
+                    <div class="details-body">
+                        <div class="field-row">
+                            <div class="field">
+                                <label for="batch-size">GPU Batch</label>
+                                <input id="batch-size" type="number" value="32" min="1" max="256" step="8">
+                            </div>
+                            <div class="field">
+                                <label for="threads">CPU 线程</label>
+                                <input id="threads" type="number" value="4" min="1" max="256" step="1">
+                            </div>
+                        </div>
+                        <p class="help-text">较大的 Batch 有利于提高 GPU 利用率；线程数应根据服务器剩余 CPU 资源调整。</p>
+                    </div>
+                </details>
+            </section>
+
+            <section class="card">
+                <div class="card-body">
+                    <div class="card-title">
+                        <div>
+                            <h2>AI 候选落点</h2>
+                            <p>展示最近一次 MCTS 搜索的前五个候选</p>
+                        </div>
+                    </div>
+                    <div id="analysis-content" aria-live="polite">
+                        <div class="analysis-empty">AI 完成一次搜索后，这里会显示候选落点与访问概率。</div>
+                    </div>
+                </div>
+
+                <details>
+                    <summary>运行记录</summary>
+                    <div id="log-container" class="log-list" aria-live="polite"></div>
+                </details>
+            </section>
+
+            <section class="card">
+                <div class="card-body">
+                    <div class="card-title">
+                        <div>
+                            <h2>着法记录</h2>
+                            <p id="history-caption">尚未落子</p>
+                        </div>
+                    </div>
+                    <div id="history-list" class="history-list">
+                        <div class="history-empty">本局着法会按顺序显示在这里。</div>
+                    </div>
+                </div>
+            </section>
+        </aside>
     </div>
-    
-    <!-- Sidebar Controls -->
-    <div id="sidebar">
-        <h1>🌌 Nebula Zero</h1>
-        
-        <!-- Dashboard -->
-        <div class="card">
-            <div class="card-header">📊 Game Stats</div>
-            <div class="stat-row">
-                <span class="stat-label">Status</span>
-                <span class="stat-value">
-                    <span id="status-dot" class="status-dot status-active"></span>
-                    <span id="status-text">Ready</span>
-                </span>
-            </div>
-            <div class="stat-row">
-                <span class="stat-label">Turn</span>
-                <span class="stat-value" id="turn-text">Black</span>
-            </div>
-            <div class="stat-row">
-                <span class="stat-label">AI Win Rate</span>
-                <span class="stat-value" id="win-rate" style="color: var(--primary);">--</span>
-            </div>
-            <div class="stat-row">
-                <span class="stat-label">Compute Time</span>
-                <span class="stat-value" id="compute-time">--</span>
-            </div>
-        </div>
+</main>
 
-        <!-- Settings -->
-        <div class="card">
-            <div class="card-header">⚙️ Configuration</div>
-            
-            <div class="control-group">
-                <label>Model Checkpoint</label>
-                <select id="model-select"><option>Loading...</option></select>
-            </div>
-            
-            <div style="display: flex; gap: 10px;">
-                <div class="control-group" style="flex: 1;">
-                    <label>Simulations</label>
-                    <input type="number" id="sims" value="800" min="100" step="100">
-                </div>
-                <div class="control-group" style="flex: 1;">
-                    <label>Temp</label>
-                    <input type="number" id="temp" value="0.1" step="0.1" min="0" max="2">
-                </div>
-            </div>
-        </div>
-
-        <!-- Performance -->
-        <div class="card">
-            <div class="card-header">🚀 Performance Tuning</div>
-            <div style="display: flex; gap: 10px;">
-                <div class="control-group" style="flex: 1;">
-                    <label>Batch Size (GPU)</label>
-                    <input type="number" id="batch-size" value="32" step="8" min="1" max="256">
-                </div>
-                <div class="control-group" style="flex: 1;">
-                    <label>Threads (CPU)</label>
-                    <input type="number" id="threads" value="4" step="1" min="1" max="64">
-                </div>
-            </div>
-            <div style="font-size: 11px; color: #888; margin-top: -5px;">
-                Increase Batch Size for GPU saturation. Increase Threads for CPU usage.
-            </div>
-        </div>
-        
-        <!-- Actions -->
-        <div class="btn-group">
-            <button id="btn-ai" onclick="triggerAI()">
-                <span>🤖 AI Move</span>
-            </button>
-            <button id="btn-reset" onclick="resetGame()">
-                <span>🔄 Reset</span>
-            </button>
-        </div>
-
-        <!-- Thinking / Analysis -->
-        <div class="card" style="flex-grow: 1; display: flex; flex-direction: column;">
-            <div class="card-header">🧠 AI Thoughts</div>
-            <div id="analysis-content" style="flex-grow: 1; overflow-y: auto;">
-                <div style="color:#aaa; text-align:center; padding: 20px;">No analysis yet</div>
-            </div>
-        </div>
-
-        <!-- Log -->
-        <div id="log-container"></div>
-    </div>
-</div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
 
 <script>
-    // Configuration
+    "use strict";
+
+    // 棋盘绘制采用固定逻辑坐标，CSS 只负责缩放，保证桌面端与移动端落点一致。
     const BOARD_SIZE = 19;
-    const CANVAS_SIZE = 760;
-    const CELL_SIZE = CANVAS_SIZE / (BOARD_SIZE + 1);
-    const MARGIN = CELL_SIZE;
+    const CANVAS_SIZE = 800;
+    const BOARD_MARGIN = 50;
+    const CELL_SIZE = (CANVAS_SIZE - BOARD_MARGIN * 2) / (BOARD_SIZE - 1);
+    const COLUMN_LABELS = "ABCDEFGHIJKLMNOPQRS";
+    const STORAGE_KEY = "nebula-zero-web-settings-v2";
 
-    const canvas = document.getElementById('board');
-    const ctx = canvas.getContext('2d');
-    
-    // State
-    let board = Array(19).fill().map(() => Array(19).fill(0));
-    let currentPlayer = 1; // 1 Black, -1 White
-    let isThinking = false;
-    let gameOver = false;
+    const canvas = document.getElementById("board");
+    const ctx = canvas.getContext("2d");
+    const elements = {
+        headerDot: document.getElementById("header-status-dot"),
+        headerText: document.getElementById("header-status-text"),
+        turnStone: document.getElementById("turn-stone"),
+        turnText: document.getElementById("turn-text"),
+        moveCount: document.getElementById("move-count"),
+        boardHint: document.getElementById("board-hint"),
+        gameStatus: document.getElementById("game-status"),
+        winRate: document.getElementById("win-rate"),
+        computeTime: document.getElementById("compute-time"),
+        aiButton: document.getElementById("btn-ai"),
+        aiButtonIcon: document.getElementById("btn-ai-icon"),
+        aiButtonText: document.getElementById("btn-ai-text"),
+        resetButton: document.getElementById("btn-reset"),
+        undoButton: document.getElementById("btn-undo"),
+        exportButton: document.getElementById("btn-export"),
+        importButton: document.getElementById("btn-import"),
+        recordFile: document.getElementById("record-file"),
+        engineNotice: document.getElementById("engine-notice"),
+        autoResponse: document.getElementById("auto-response"),
+        humanSide: document.getElementById("human-side"),
+        modelSelect: document.getElementById("model-select"),
+        modelSize: document.getElementById("model-size"),
+        simulations: document.getElementById("sims"),
+        temperature: document.getElementById("temp"),
+        batchSize: document.getElementById("batch-size"),
+        threads: document.getElementById("threads"),
+        analysis: document.getElementById("analysis-content"),
+        historyList: document.getElementById("history-list"),
+        historyCaption: document.getElementById("history-caption"),
+        logs: document.getElementById("log-container"),
+        toast: document.getElementById("toast"),
+        searchSummary: document.getElementById("search-summary"),
+        searchProgress: document.getElementById("search-progress"),
+        progressTitle: document.getElementById("progress-title"),
+        progressPercent: document.getElementById("progress-percent"),
+        progressBar: document.getElementById("progress-bar"),
+        progressCount: document.getElementById("progress-count"),
+        progressElapsed: document.getElementById("progress-elapsed")
+    };
+
+    let board = Array.from({length: BOARD_SIZE}, function () {
+        return Array(BOARD_SIZE).fill(0);
+    });
+    let currentPlayer = 1;
+    let history = [];
     let lastMove = null;
-    let gameId = 0; // Generation counter to invalidate stale AI moves
+    let hoverMove = null;
+    let gameOver = false;
+    let winner = null;
+    let isBusy = false;
+    let busyKind = null;
+    let engineReady = true;
+    let requestGeneration = 0;
+    let activeAiController = null;
+    let toastTimer = null;
+    let models = [];
+    let progressPollTimer = null;
+    let progressHideTimer = null;
+    let autoMoveTimer = null;
 
-    // Initialize
-    init();
-
-    function init() {
-        drawBoard();
-        fetchModels();
-        fetchState();
-        
-        // Canvas Events
-        canvas.addEventListener('mousedown', handleClick);
+    function coordinateName(row, col) {
+        return COLUMN_LABELS[col] + String(BOARD_SIZE - row);
     }
 
-    // --- Drawing ---
-    function drawBoard() {
+    function stonesRemaining() {
+        if (history.length === 0) return 1;
+        return history.length % 2 === 1 ? 2 : 1;
+    }
+
+    function winnerName(value) {
+        if (value === 1) return "黑方";
+        if (value === -1) return "白方";
+        return "和棋";
+    }
+
+    function readSettings() {
         try {
-            if (!board || !board.length) {
-                log("Error: Board is invalid");
-                return;
+            const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+            if (saved.sims !== undefined) elements.simulations.value = saved.sims;
+            if (saved.temp !== undefined) elements.temperature.value = saved.temp;
+            if (saved.batchSize !== undefined) elements.batchSize.value = saved.batchSize;
+            if (saved.threads !== undefined) elements.threads.value = saved.threads;
+            if (saved.autoResponse !== undefined) {
+                elements.autoResponse.checked = Boolean(saved.autoResponse);
             }
-
-            // Wood Background
-            ctx.fillStyle = '#E3C98D';
-            ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
-
-            // Grid Lines
-            ctx.beginPath();
-            ctx.strokeStyle = '#000';
-            ctx.lineWidth = 1;
-            
-            for (let i = 0; i < BOARD_SIZE; i++) {
-                const pos = MARGIN + i * CELL_SIZE;
-                ctx.moveTo(pos, MARGIN);
-                ctx.lineTo(pos, CANVAS_SIZE - MARGIN);
-                ctx.moveTo(MARGIN, pos);
-                ctx.lineTo(CANVAS_SIZE - MARGIN, pos);
+            if (saved.humanSide !== undefined) {
+                elements.humanSide.value = String(saved.humanSide);
             }
-            ctx.stroke();
-
-            // Star Points
-            const stars = [3, 9, 15];
-            ctx.fillStyle = '#000';
-            for (let r of stars) {
-                for (let c of stars) {
-                    ctx.beginPath();
-                    ctx.arc(MARGIN + c * CELL_SIZE, MARGIN + r * CELL_SIZE, 3, 0, Math.PI * 2);
-                    ctx.fill();
-                }
-            }
-            
-            // Stones
-            for (let r = 0; r < BOARD_SIZE; r++) {
-                if (!board[r]) continue;
-                for (let c = 0; c < BOARD_SIZE; c++) {
-                    if (board[r][c] !== 0) {
-                        drawStone(r, c, board[r][c]);
-                    }
-                }
-            }
-
-            // Last Move Marker
-            if (lastMove && lastMove.length === 2) {
-                const [r, c] = lastMove;
-                // Validate r, c
-                if (typeof r === 'number' && typeof c === 'number') {
-                    const x = MARGIN + c * CELL_SIZE;
-                    const y = MARGIN + r * CELL_SIZE;
-                    
-                    ctx.beginPath();
-                    ctx.arc(x, y, 4, 0, Math.PI * 2);
-                    ctx.fillStyle = '#ff0000';
-                    ctx.fill();
-                } else {
-                    log("Invalid lastMove: " + JSON.stringify(lastMove));
-                }
-            }
-        } catch (e) {
-            log("Error in drawBoard: " + e.message);
-            console.error(e);
+            return saved.modelPath || "";
+        } catch (error) {
+            return "";
         }
     }
 
-    function drawStone(r, c, color) {
-        const x = MARGIN + c * CELL_SIZE;
-        const y = MARGIN + r * CELL_SIZE;
-        const radius = CELL_SIZE * 0.45;
+    function saveSettings() {
+        const settings = {
+            modelPath: elements.modelSelect.value,
+            sims: elements.simulations.value,
+            temp: elements.temperature.value,
+            batchSize: elements.batchSize.value,
+            threads: elements.threads.value,
+            autoResponse: elements.autoResponse.checked,
+            humanSide: Number(elements.humanSide.value)
+        };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    }
+
+    function humanSide() {
+        return Number(elements.humanSide.value) === -1 ? -1 : 1;
+    }
+
+    function playerForMove(moveIndex) {
+        if (moveIndex === 0) return 1;
+        return Math.floor((moveIndex - 1) / 2) % 2 === 0 ? -1 : 1;
+    }
+
+    function updateSearchSummary() {
+        const sims = validatedNumber(elements.simulations, 800, 1, 100000);
+        const batch = validatedNumber(elements.batchSize, 32, 1, 256);
+        const threads = validatedNumber(elements.threads, 4, 1, 256);
+        elements.searchSummary.textContent =
+            "当前：" + sims + " 次模拟 · Batch " + batch + " · " + threads + " 线程";
+    }
+
+    function updatePresetState() {
+        const value = Number(elements.simulations.value);
+        document.querySelectorAll(".preset").forEach(function (button) {
+            button.classList.toggle("active", Number(button.dataset.sims) === value);
+        });
+    }
+
+    function drawBoard() {
+        ctx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+
+        const wood = ctx.createLinearGradient(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+        wood.addColorStop(0, "#e7c387");
+        wood.addColorStop(0.48, "#d8aa68");
+        wood.addColorStop(1, "#c99555");
+        ctx.fillStyle = wood;
+        ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+
+        // 用轻微木纹增加棋盘质感，线条位置固定，重绘时不会闪烁。
+        ctx.save();
+        ctx.globalAlpha = 0.09;
+        ctx.strokeStyle = "#7a4b22";
+        ctx.lineWidth = 1;
+        for (let index = 0; index < 22; index += 1) {
+            const y = 18 + index * 37;
+            ctx.beginPath();
+            ctx.moveTo(0, y);
+            ctx.bezierCurveTo(210, y - 4, 570, y + 5, CANVAS_SIZE, y - 2);
+            ctx.stroke();
+        }
+        ctx.restore();
+
+        ctx.save();
+        ctx.strokeStyle = "rgba(61, 39, 18, 0.78)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let index = 0; index < BOARD_SIZE; index += 1) {
+            const position = BOARD_MARGIN + index * CELL_SIZE;
+            ctx.moveTo(position, BOARD_MARGIN);
+            ctx.lineTo(position, CANVAS_SIZE - BOARD_MARGIN);
+            ctx.moveTo(BOARD_MARGIN, position);
+            ctx.lineTo(CANVAS_SIZE - BOARD_MARGIN, position);
+        }
+        ctx.stroke();
+        ctx.restore();
+
+        ctx.save();
+        ctx.fillStyle = "rgba(58, 36, 16, 0.78)";
+        ctx.font = "500 11px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        for (let index = 0; index < BOARD_SIZE; index += 1) {
+            const position = BOARD_MARGIN + index * CELL_SIZE;
+            ctx.fillText(COLUMN_LABELS[index], position, 22);
+            ctx.fillText(COLUMN_LABELS[index], position, CANVAS_SIZE - 22);
+            ctx.fillText(String(BOARD_SIZE - index), 21, position);
+            ctx.fillText(String(BOARD_SIZE - index), CANVAS_SIZE - 21, position);
+        }
+        ctx.restore();
+
+        ctx.fillStyle = "#493019";
+        [3, 9, 15].forEach(function (row) {
+            [3, 9, 15].forEach(function (col) {
+                ctx.beginPath();
+                ctx.arc(
+                    BOARD_MARGIN + col * CELL_SIZE,
+                    BOARD_MARGIN + row * CELL_SIZE,
+                    3.4,
+                    0,
+                    Math.PI * 2
+                );
+                ctx.fill();
+            });
+        });
+
+        for (let row = 0; row < BOARD_SIZE; row += 1) {
+            for (let col = 0; col < BOARD_SIZE; col += 1) {
+                if (board[row][col] !== 0) drawStone(row, col, board[row][col], false);
+            }
+        }
+
+        if (hoverMove && !isBusy && !gameOver) {
+            const row = hoverMove[0];
+            const col = hoverMove[1];
+            if (board[row][col] === 0) drawStone(row, col, currentPlayer, true);
+        }
+
+        if (lastMove) drawLastMove(lastMove[0], lastMove[1]);
+    }
+
+    function drawStone(row, col, color, preview) {
+        const x = BOARD_MARGIN + col * CELL_SIZE;
+        const y = BOARD_MARGIN + row * CELL_SIZE;
+        const radius = CELL_SIZE * 0.43;
+
+        ctx.save();
+        ctx.globalAlpha = preview ? 0.42 : 1;
+        ctx.shadowColor = "rgba(26, 19, 11, 0.28)";
+        ctx.shadowBlur = preview ? 2 : 7;
+        ctx.shadowOffsetY = preview ? 1 : 3;
+
+        const gradient = ctx.createRadialGradient(
+            x - radius * 0.32,
+            y - radius * 0.36,
+            radius * 0.08,
+            x,
+            y,
+            radius
+        );
+        if (color === 1) {
+            gradient.addColorStop(0, "#646464");
+            gradient.addColorStop(0.48, "#252525");
+            gradient.addColorStop(1, "#050505");
+        } else {
+            gradient.addColorStop(0, "#ffffff");
+            gradient.addColorStop(0.64, "#f2f2f0");
+            gradient.addColorStop(1, "#d7d7d3");
+        }
 
         ctx.beginPath();
         ctx.arc(x, y, radius, 0, Math.PI * 2);
-        
-        // Gradient for 3D effect
-        const grad = ctx.createRadialGradient(x - radius/3, y - radius/3, radius/10, x, y, radius);
-        if (color === 1) {
-            grad.addColorStop(0, '#555');
-            grad.addColorStop(1, '#000');
-        } else {
-            grad.addColorStop(0, '#fff');
-            grad.addColorStop(1, '#ddd');
-        }
-        
-        ctx.fillStyle = grad;
+        ctx.fillStyle = gradient;
         ctx.fill();
-        
-        // White stone outline
+        ctx.shadowColor = "transparent";
         if (color === -1) {
-            ctx.strokeStyle = '#aaa';
+            ctx.strokeStyle = "rgba(58, 52, 44, 0.34)";
             ctx.lineWidth = 1;
             ctx.stroke();
         }
+        ctx.restore();
     }
 
-    // --- Logic ---
-    async function handleClick(e) {
-        if (isThinking || gameOver) return;
-        
+    function drawLastMove(row, col) {
+        const x = BOARD_MARGIN + col * CELL_SIZE;
+        const y = BOARD_MARGIN + row * CELL_SIZE;
+        ctx.save();
+        ctx.strokeStyle = "#f36f32";
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(x, y, CELL_SIZE * 0.20, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    function eventToMove(event) {
         const rect = canvas.getBoundingClientRect();
-        const x = e.clientX - rect.left - MARGIN + CELL_SIZE/2;
-        const y = e.clientY - rect.top - MARGIN + CELL_SIZE/2;
-        
-        const c = Math.floor(x / CELL_SIZE);
-        const r = Math.floor(y / CELL_SIZE);
-        
-        if (r >= 0 && r < BOARD_SIZE && c >= 0 && c < BOARD_SIZE) {
-            if (board[r][c] === 0) {
-                await sendMove(r, c);
+        const x = (event.clientX - rect.left) * (CANVAS_SIZE / rect.width);
+        const y = (event.clientY - rect.top) * (CANVAS_SIZE / rect.height);
+        const col = Math.round((x - BOARD_MARGIN) / CELL_SIZE);
+        const row = Math.round((y - BOARD_MARGIN) / CELL_SIZE);
+        if (row < 0 || row >= BOARD_SIZE || col < 0 || col >= BOARD_SIZE) return null;
+
+        const gridX = BOARD_MARGIN + col * CELL_SIZE;
+        const gridY = BOARD_MARGIN + row * CELL_SIZE;
+        if (Math.hypot(x - gridX, y - gridY) > CELL_SIZE * 0.52) return null;
+        return [row, col];
+    }
+
+    function renderState() {
+        const remaining = stonesRemaining();
+        const colorName = currentPlayer === 1 ? "黑方" : "白方";
+        elements.turnStone.classList.toggle("white", currentPlayer === -1);
+        elements.turnText.textContent = colorName + " · 本回合还需 " + remaining + " 子";
+        elements.moveCount.textContent = "第 " + history.length + " 手";
+
+        if (gameOver) {
+            elements.gameStatus.textContent = winner === 0 ? "本局和棋" : winnerName(winner) + "获胜";
+            elements.headerText.textContent = "本局结束";
+            elements.headerDot.className = "status-dot";
+            elements.headerDot.style.background = "#c74343";
+            elements.boardHint.textContent = "本局已经结束，请重新开局";
+        } else if (isBusy) {
+            const aiSearching = busyKind === "ai";
+            elements.gameStatus.textContent = aiSearching ? "AI 正在搜索" : "正在同步棋局";
+            elements.headerText.textContent = aiSearching ? "计算中" : "处理中";
+            elements.headerDot.className = aiSearching ? "status-dot thinking" : "status-dot";
+            elements.headerDot.style.background = "";
+            elements.boardHint.textContent = aiSearching
+                ? "正在计算候选落点，请稍候"
+                : "正在更新棋盘状态";
+        } else {
+            elements.gameStatus.textContent = "等待" + colorName + "落子";
+            elements.headerText.textContent = engineReady ? "已就绪" : "仅棋盘可用";
+            elements.headerDot.className = engineReady ? "status-dot" : "status-dot error";
+            elements.headerDot.style.background = "";
+            elements.boardHint.textContent = "点击空白交叉点落子";
+        }
+
+        elements.aiButton.disabled = isBusy || gameOver || !engineReady || !elements.modelSelect.value;
+        elements.modelSelect.disabled = isBusy || models.length === 0;
+        elements.undoButton.disabled = isBusy || history.length === 0;
+        elements.exportButton.disabled = history.length === 0;
+        elements.importButton.disabled = isBusy;
+        elements.humanSide.disabled = isBusy;
+        elements.autoResponse.disabled = isBusy;
+        canvas.classList.toggle("busy", isBusy);
+        canvas.setAttribute("aria-busy", String(isBusy));
+        renderMoveHistory();
+        updateSearchSummary();
+        drawBoard();
+    }
+
+    function setBusy(busy, kind) {
+        isBusy = busy;
+        busyKind = busy ? (kind || "request") : null;
+        const aiSearching = busy && busyKind === "ai";
+        elements.aiButtonIcon.innerHTML = aiSearching ? '<span class="spinner"></span>' : "✦";
+        elements.aiButtonText.textContent = aiSearching ? "AI 正在思考" : "让 AI 落子";
+        renderState();
+    }
+
+    function renderMoveHistory() {
+        elements.historyList.replaceChildren();
+        elements.historyCaption.textContent = history.length
+            ? "共 " + history.length + " 手"
+            : "尚未落子";
+        if (!history.length) {
+            const empty = document.createElement("div");
+            empty.className = "history-empty";
+            empty.textContent = "本局着法会按顺序显示在这里。";
+            elements.historyList.appendChild(empty);
+            return;
+        }
+
+        history.forEach(function (move, index) {
+            const row = document.createElement("div");
+            row.className = "history-row";
+
+            const number = document.createElement("span");
+            number.className = "history-index";
+            number.textContent = String(index + 1).padStart(3, "0");
+
+            const stone = document.createElement("span");
+            stone.className = "history-stone" + (playerForMove(index) === -1 ? " white" : "");
+            stone.setAttribute("aria-label", playerForMove(index) === 1 ? "黑方" : "白方");
+
+            const coordinate = document.createElement("span");
+            coordinate.className = "history-coordinate";
+            coordinate.textContent = coordinateName(move[0], move[1]);
+
+            row.append(number, stone, coordinate);
+            elements.historyList.appendChild(row);
+        });
+        elements.historyList.scrollTop = elements.historyList.scrollHeight;
+    }
+
+    async function apiRequest(url, options) {
+        const response = await fetch(url, options || {});
+        let data;
+        try {
+            data = await response.json();
+        } catch (error) {
+            throw new Error("服务器返回了无法解析的数据");
+        }
+        if (!response.ok || data.status === "error") {
+            throw new Error(data.msg || "请求失败，请稍后重试");
+        }
+        return data;
+    }
+
+    function applyServerState(data) {
+        if (Array.isArray(data.board)) board = data.board;
+        if (data.current_player === 1 || data.current_player === -1) {
+            currentPlayer = data.current_player;
+        }
+        if (Array.isArray(data.history)) {
+            history = data.history;
+            lastMove = history.length ? history[history.length - 1] : null;
+        }
+        gameOver = Boolean(data.game_over);
+        winner = data.winner === undefined ? null : data.winner;
+        renderState();
+    }
+
+    async function fetchState() {
+        try {
+            const data = await apiRequest("/state");
+            applyServerState(data);
+            if (data.engine_available === false) {
+                engineReady = false;
+                showEngineNotice("MCTS 动态库尚未就绪；当前仍可在棋盘上手动落子。");
             }
+            logMessage("棋盘状态已同步");
+        } catch (error) {
+            engineReady = false;
+            showToast("连接服务失败：" + error.message, true);
+            logMessage("状态同步失败：" + error.message);
+            renderState();
         }
     }
 
-    async function sendMove(r, c) {
-        setThinking(true);
+    async function fetchModels(savedModelPath) {
         try {
-            log(`Sending Move: ${r}, ${c}`);
-            const res = await fetch('/move', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({r, c})
-            });
-            const data = await res.json();
-            log(`Response: ${data.status}`);
-            handleResponse(data);
-            if (data.status === 'ok') {
-                lastMove = [r, c];
-                drawBoard(); // Redraw to show last move marker
-            }
-        } catch (e) {
-            logError(e);
-        } finally {
-            setThinking(false);
-        }
-    }
+            const data = await apiRequest("/models");
+            models = Array.isArray(data.models) ? data.models : [];
+            engineReady = data.engine_available !== false;
+            elements.modelSelect.replaceChildren();
 
-    async function triggerAI() {
-        if (isThinking || gameOver) return;
-        
-        const currentGen = gameId; // Capture current generation
-        
-        setThinking(true, "AI Thinking...");
-        const btn = document.getElementById('btn-ai');
-        const originalText = btn.innerHTML;
-        btn.innerHTML = '<div class="spinner"></div>';
-        
-        try {
-            const payload = {
-                model_path: document.getElementById('model-select').value,
-                sims: parseInt(document.getElementById('sims').value),
-                temp: parseFloat(document.getElementById('temp').value),
-                batch_size: parseInt(document.getElementById('batch-size').value),
-                num_threads: parseInt(document.getElementById('threads').value)
-            };
-
-            const res = await fetch('/ai_move', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(payload)
-            });
-            
-            const data = await res.json();
-            
-            // Check if game was reset while we were thinking
-            if (gameId !== currentGen) {
-                log("AI response ignored (Game Reset)");
-                return;
-            }
-
-            if (data.status === 'ok') {
-                handleResponse(data);
-                updateStats(data);
-                lastMove = data.move; // Highlight AI move
-                drawBoard();
+            if (!models.length) {
+                const option = document.createElement("option");
+                option.value = "";
+                option.textContent = "未找到 TensorRT 模型";
+                elements.modelSelect.appendChild(option);
+                engineReady = false;
+                showEngineNotice("checkpoints 目录中没有可用的 .engine 模型。");
             } else {
-                log("Error: " + data.msg);
+                models.forEach(function (model) {
+                    const option = document.createElement("option");
+                    option.value = model.path;
+                    option.textContent = model.name + (
+                        model.pair_enhanced ? " · 双落子增强" : ""
+                    );
+                    elements.modelSelect.appendChild(option);
+                });
+                const preferredPath = data.default_path || savedModelPath;
+                if (preferredPath && models.some(function (model) {
+                    return model.path === preferredPath;
+                })) {
+                    elements.modelSelect.value = preferredPath;
+                }
+                updateModelSize();
             }
-        } catch (e) {
-            logError(e);
+
+            if (!engineReady) {
+                showEngineNotice("页面已启动，但 MCTS 动态库加载失败；修复运行环境后刷新页面即可启用 AI。");
+            }
+            renderState();
+        } catch (error) {
+            models = [];
+            engineReady = false;
+            elements.modelSelect.innerHTML = '<option value="">模型列表读取失败</option>';
+            showEngineNotice("无法读取模型列表：" + error.message);
+            renderState();
+        }
+    }
+
+    function updateModelSize() {
+        const selected = models.find(function (model) {
+            return model.path === elements.modelSelect.value;
+        });
+        elements.modelSize.textContent = selected ? selected.size_mb + " MB" : "";
+        saveSettings();
+        renderState();
+    }
+
+    function showEngineNotice(message) {
+        elements.engineNotice.textContent = message;
+        elements.engineNotice.classList.add("visible");
+    }
+
+    async function sendHumanMove(row, col) {
+        if (isBusy || gameOver || board[row][col] !== 0) return;
+        if (elements.autoResponse.checked && currentPlayer !== humanSide()) {
+            showToast("现在轮到 AI 落子");
+            return;
+        }
+        const movingPlayer = currentPlayer;
+        setBusy(true, "move");
+        const moveName = coordinateName(row, col);
+        try {
+            const data = await apiRequest("/move", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({r: row, c: col})
+            });
+            applyServerState(data);
+            logMessage((movingPlayer === 1 ? "黑方" : "白方") + "落子 " + moveName);
+            if (data.game_over) announceResult(data.winner);
+        } catch (error) {
+            showToast(error.message, true);
+            logMessage("落子失败：" + error.message);
+            await fetchState();
         } finally {
-            if (gameId === currentGen) {
-                setThinking(false);
-                btn.innerHTML = originalText;
+            setBusy(false);
+            maybeAutoRespond();
+        }
+    }
+
+    function validatedNumber(element, fallback, minimum, maximum) {
+        const parsed = Number(element.value);
+        const value = Number.isFinite(parsed) ? parsed : fallback;
+        const limited = Math.max(minimum, Math.min(maximum, value));
+        element.value = limited;
+        return limited;
+    }
+
+    async function triggerAiMove(autoTriggered) {
+        if (isBusy || gameOver || !engineReady) return;
+
+        const generation = requestGeneration;
+        let searchCompleted = false;
+        activeAiController = new AbortController();
+        const payload = {
+            model_path: elements.modelSelect.value,
+            sims: validatedNumber(elements.simulations, 800, 1, 100000),
+            temp: validatedNumber(elements.temperature, 0.1, 0, 2),
+            batch_size: validatedNumber(elements.batchSize, 32, 1, 256),
+            num_threads: validatedNumber(elements.threads, 4, 1, 256)
+        };
+        saveSettings();
+        updatePresetState();
+        setBusy(true, "ai");
+        startProgressPolling(payload);
+        logMessage("开始 MCTS 搜索 · " + payload.sims + " 次模拟");
+
+        try {
+            const data = await apiRequest("/ai_move", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify(payload),
+                signal: activeAiController.signal
+            });
+            if (generation !== requestGeneration) return;
+
+            applyServerState(data);
+            elements.winRate.textContent = (Number(data.win_rate) * 100).toFixed(1) + "%";
+            elements.computeTime.textContent = Number(data.duration).toFixed(2) + " 秒";
+            updateProgressDisplay({
+                completed: data.search.simulations,
+                total: data.search.simulations,
+                elapsed: data.duration,
+                progress: 1
+            });
+            searchCompleted = true;
+            renderAnalysis(data.debug_moves || []);
+            const moveName = coordinateName(data.move[0], data.move[1]);
+            logMessage("AI 落子 " + moveName + " · 用时 " + Number(data.duration).toFixed(2) + " 秒");
+            if (data.game_over) announceResult(data.winner);
+        } catch (error) {
+            if (error.name !== "AbortError" && generation === requestGeneration) {
+                showToast("AI 搜索失败：" + error.message, true);
+                logMessage("AI 搜索失败：" + error.message);
             }
+        } finally {
+            stopProgressPolling(!searchCompleted);
+            if (generation === requestGeneration) {
+                setBusy(false);
+                if (autoTriggered) maybeAutoRespond();
+            }
+            activeAiController = null;
         }
     }
 
     async function resetGame() {
-        if (confirm("Reset the game?")) {
-            gameId++; // Invalidate pending AI moves
-            await fetch('/reset', {method: 'POST'});
-            await fetchState();
-            log("Game Reset");
-            gameOver = false;
+        if (history.length && !window.confirm("确定结束当前对局并重新开局吗？")) return;
+        requestGeneration += 1;
+        if (activeAiController) activeAiController.abort();
+        stopProgressPolling(true);
+        setBusy(true, "reset");
+
+        try {
+            const data = await apiRequest("/reset", {method: "POST"});
+            applyServerState(data);
             lastMove = null;
-            isThinking = false; // Force reset thinking state
-            
-            // Reset UI components
-            const btn = document.getElementById('btn-ai');
-            btn.innerHTML = '<span>🤖 AI Move</span>';
-            
-            document.getElementById('analysis-content').innerHTML = '<div style="color:#aaa; text-align:center; padding: 20px;">No analysis yet</div>';
-            document.getElementById('win-rate').innerText = "--";
-            document.getElementById('compute-time').innerText = "--";
-            
-            updateUI();
+            hoverMove = null;
+            elements.winRate.textContent = "--";
+            elements.computeTime.textContent = "--";
+            renderAnalysis([]);
+            logMessage("已重新开局");
+            showToast("新对局已经准备好");
+        } catch (error) {
+            showToast("重新开局失败：" + error.message, true);
+            logMessage("重新开局失败：" + error.message);
+        } finally {
+            setBusy(false);
+            maybeAutoRespond();
         }
     }
 
-    // --- Helpers ---
-    function handleResponse(data) {
+    function maybeAutoRespond() {
+        window.clearTimeout(autoMoveTimer);
+        if (
+            !elements.autoResponse.checked ||
+            isBusy ||
+            gameOver ||
+            !engineReady ||
+            currentPlayer === humanSide()
+        ) {
+            return;
+        }
+        autoMoveTimer = window.setTimeout(function () {
+            if (
+                elements.autoResponse.checked &&
+                !isBusy &&
+                !gameOver &&
+                currentPlayer !== humanSide()
+            ) {
+                triggerAiMove(true);
+            }
+        }, 320);
+    }
+
+    function startProgressPolling(payload) {
+        window.clearTimeout(progressHideTimer);
+        window.clearInterval(progressPollTimer);
+        elements.searchProgress.classList.add("visible");
+        updateProgressDisplay({
+            completed: 0,
+            total: payload.sims,
+            elapsed: 0,
+            progress: 0
+        });
+
+        let polling = false;
+        progressPollTimer = window.setInterval(async function () {
+            if (polling) return;
+            polling = true;
+            try {
+                const data = await apiRequest("/search_status");
+                updateProgressDisplay(data);
+            } catch (error) {
+                // 搜索主请求仍在进行时，偶发的进度轮询失败不应中断对弈。
+            } finally {
+                polling = false;
+            }
+        }, 280);
+    }
+
+    function updateProgressDisplay(data) {
+        const total = Math.max(1, Number(data.total) || Number(elements.simulations.value) || 1);
+        const completed = Math.max(0, Math.min(total, Number(data.completed) || 0));
+        const progress = Math.max(0, Math.min(1, Number(data.progress) || completed / total));
+        elements.progressPercent.textContent = Math.round(progress * 100) + "%";
+        elements.progressBar.style.width = (progress * 100).toFixed(1) + "%";
+        elements.progressCount.textContent = completed + " / " + total + " 次模拟";
+        elements.progressElapsed.textContent = (Number(data.elapsed) || 0).toFixed(1) + " 秒";
+        elements.progressTitle.textContent = progress >= 1 ? "搜索完成" : "正在建立搜索树";
+    }
+
+    function stopProgressPolling(immediate) {
+        window.clearInterval(progressPollTimer);
+        progressPollTimer = null;
+        window.clearTimeout(progressHideTimer);
+        if (immediate) {
+            elements.searchProgress.classList.remove("visible");
+            return;
+        }
+        elements.progressPercent.textContent = "100%";
+        elements.progressBar.style.width = "100%";
+        elements.progressTitle.textContent = "搜索完成";
+        progressHideTimer = window.setTimeout(function () {
+            elements.searchProgress.classList.remove("visible");
+        }, 900);
+    }
+
+    function calculateUndoSteps() {
+        if (!elements.autoResponse.checked || history.length <= 1) return 1;
+
+        const player = humanSide();
+        let index = history.length - 1;
+        let steps = 0;
+
+        // 自动对弈模式下，同时撤销 AI 的应手和玩家上一回合，
+        // 让棋盘回到玩家可以重新选择落点的位置。
+        while (index >= 0 && playerForMove(index) !== player) {
+            steps += 1;
+            index -= 1;
+        }
+        while (index >= 0 && playerForMove(index) === player) {
+            steps += 1;
+            index -= 1;
+        }
+        return Math.max(1, Math.min(8, steps));
+    }
+
+    async function undoMove() {
+        if (isBusy || !history.length) return;
+        window.clearTimeout(autoMoveTimer);
+        const steps = calculateUndoSteps();
+        setBusy(true, "undo");
         try {
-            if (data.status === 'ok') {
-                if (!data.board) throw new Error("Missing board data");
-                
-                board = data.board;
-                currentPlayer = data.current_player;
-                gameOver = data.game_over;
-                
-                // Debug: Count stones
-                let stones = 0;
-                if (board && board.length) {
-                    for(let r=0; r<19; r++) {
-                        if (board[r]) {
-                            for(let c=0; c<19; c++) if(board[r][c] !== 0) stones++;
-                        }
-                    }
-                }
-                log(`Board updated. Stones: ${stones}. Next: ${currentPlayer}`);
-                
-                drawBoard();
-                updateUI();
-                
-                if (gameOver) {
-                    const winner = data.winner === 1 ? "Black" : "White";
-                    log(`🏆 GAME OVER! ${winner} Wins!`);
-                    setTimeout(() => alert(`${winner} Wins!`), 100);
-                }
-            } else {
-                log("Server returned status: " + data.status);
-            }
-        } catch (e) {
-            logError(e);
+            const data = await apiRequest("/undo", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({steps: steps})
+            });
+            applyServerState(data);
+            elements.winRate.textContent = "--";
+            elements.computeTime.textContent = "--";
+            renderAnalysis([]);
+            logMessage("已撤销 " + data.undone + " 手");
+            showToast("已回到上一可操作局面");
+        } catch (error) {
+            showToast("悔棋失败：" + error.message, true);
+            logMessage("悔棋失败：" + error.message);
+        } finally {
+            setBusy(false);
         }
     }
 
-    function updateStats(data) {
+    function exportRecord() {
+        if (!history.length) return;
+        const moves = history.map(function (move, index) {
+            return {
+                move: index + 1,
+                color: playerForMove(index) === 1 ? "black" : "white",
+                row: move[0],
+                col: move[1],
+                coord: coordinateName(move[0], move[1])
+            };
+        });
+        const record = {
+            format: "nebula-zero-connect6",
+            version: 1,
+            board_size: BOARD_SIZE,
+            created_at: new Date().toISOString(),
+            result: gameOver ? winnerName(winner) : null,
+            moves: moves,
+            search_settings: {
+                simulations: Number(elements.simulations.value),
+                temperature: Number(elements.temperature.value),
+                batch_size: Number(elements.batchSize.value),
+                num_threads: Number(elements.threads.value),
+                model: elements.modelSelect.options[elements.modelSelect.selectedIndex]
+                    ? elements.modelSelect.options[elements.modelSelect.selectedIndex].text
+                    : null
+            }
+        };
+
+        const blob = new Blob([JSON.stringify(record, null, 2)], {
+            type: "application/json;charset=utf-8"
+        });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        const timestamp = new Date().toISOString().replaceAll(":", "-").slice(0, 19);
+        link.href = url;
+        link.download = "nebula-connect6-" + timestamp + ".json";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        logMessage("棋谱已导出 · " + history.length + " 手");
+        showToast("棋谱 JSON 已导出");
+    }
+
+    async function importRecord(file) {
+        if (!file) return;
+        if (file.size > 2 * 1024 * 1024) {
+            showToast("棋谱文件不能超过 2 MB", true);
+            return;
+        }
+        if (history.length && !window.confirm("导入棋谱会替换当前对局，是否继续？")) return;
+
+        window.clearTimeout(autoMoveTimer);
+        setBusy(true, "import");
         try {
-            if (document.getElementById('win-rate')) {
-                document.getElementById('win-rate').innerText = (data.win_rate * 100).toFixed(1) + "%";
+            const record = JSON.parse(await file.text());
+            if (!record || !Array.isArray(record.moves)) {
+                throw new Error("文件中缺少 moves 数组");
             }
-            if (document.getElementById('compute-time')) {
-                document.getElementById('compute-time').innerText = data.duration.toFixed(2) + "s";
-            }
-            
-            // Update Thoughts
-            const container = document.getElementById('analysis-content');
-            if (container) {
-                container.innerHTML = '';
-                
-                if (data.debug_moves && Array.isArray(data.debug_moves)) {
-                    data.debug_moves.forEach(m => {
-                        const div = document.createElement('div');
-                        div.className = 'debug-item';
-                        div.innerHTML = `
-                            <span class="debug-coord">${m.coord}</span>
-                            <span class="debug-prob">${(m.prob * 100).toFixed(1)}%</span>
-                        `;
-                        container.appendChild(div);
-                    });
-                }
-            }
-            
-            if (data.move && Array.isArray(data.move) && data.move.length >= 2) {
-                const moveStr = String.fromCharCode(65 + data.move[1]) + (19 - data.move[0]);
-                log(`AI played ${moveStr}`);
-            } else {
-                log("AI played (No move data)");
-            }
-        } catch (e) {
-            log("Error updating stats: " + e.message);
+            const data = await apiRequest("/load", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({moves: record.moves})
+            });
+            applyServerState(data);
+            elements.winRate.textContent = "--";
+            elements.computeTime.textContent = "--";
+            renderAnalysis([]);
+            logMessage("棋谱已导入 · " + history.length + " 手");
+            showToast("棋谱导入成功");
+        } catch (error) {
+            showToast("棋谱导入失败：" + error.message, true);
+            logMessage("棋谱导入失败：" + error.message);
+        } finally {
+            elements.recordFile.value = "";
+            setBusy(false);
         }
     }
 
-    async function fetchState() {
-        const res = await fetch('/state');
-        const data = await res.json();
-        board = data.board;
-        currentPlayer = data.current_player;
+    function renderAnalysis(moves) {
+        elements.analysis.replaceChildren();
+        if (!moves.length) {
+            const empty = document.createElement("div");
+            empty.className = "analysis-empty";
+            empty.textContent = "AI 完成一次搜索后，这里会显示候选落点与访问概率。";
+            elements.analysis.appendChild(empty);
+            return;
+        }
+
+        const maximum = Math.max.apply(null, moves.map(function (move) {
+            return Number(move.prob) || 0;
+        })) || 1;
+        moves.forEach(function (move) {
+            const row = document.createElement("div");
+            row.className = "move-analysis";
+
+            const coordinate = document.createElement("span");
+            coordinate.className = "move-coordinate";
+            coordinate.textContent = move.coord;
+
+            const track = document.createElement("span");
+            track.className = "prob-track";
+            const bar = document.createElement("span");
+            bar.className = "prob-bar";
+            bar.style.display = "block";
+            bar.style.width = Math.max(3, Number(move.prob) / maximum * 100) + "%";
+            track.appendChild(bar);
+
+            const probability = document.createElement("span");
+            probability.className = "prob-value";
+            probability.textContent = (Number(move.prob) * 100).toFixed(1) + "%";
+
+            row.append(coordinate, track, probability);
+            elements.analysis.appendChild(row);
+        });
+    }
+
+    function announceResult(result) {
+        const message = result === 0 ? "本局和棋" : winnerName(result) + "获胜";
+        showToast("对局结束 · " + message);
+        logMessage("对局结束 · " + message);
+    }
+
+    function showToast(message, isError) {
+        window.clearTimeout(toastTimer);
+        elements.toast.textContent = message;
+        elements.toast.classList.toggle("error", Boolean(isError));
+        elements.toast.classList.add("visible");
+        toastTimer = window.setTimeout(function () {
+            elements.toast.classList.remove("visible");
+        }, 3600);
+    }
+
+    function logMessage(message) {
+        const entry = document.createElement("div");
+        entry.className = "log-entry";
+        const time = document.createElement("span");
+        time.className = "log-time";
+        time.textContent = new Date().toLocaleTimeString("zh-CN", {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false
+        });
+        const content = document.createElement("span");
+        content.textContent = message;
+        entry.append(time, content);
+        elements.logs.appendChild(entry);
+        while (elements.logs.children.length > 80) elements.logs.firstElementChild.remove();
+        elements.logs.scrollTop = elements.logs.scrollHeight;
+    }
+
+    canvas.addEventListener("pointermove", function (event) {
+        const move = eventToMove(event);
+        const nextHover = move && board[move[0]][move[1]] === 0 ? move : null;
+        if (String(nextHover) !== String(hoverMove)) {
+            hoverMove = nextHover;
+            drawBoard();
+        }
+    });
+
+    canvas.addEventListener("pointerleave", function () {
+        hoverMove = null;
         drawBoard();
-        updateUI();
+    });
+
+    canvas.addEventListener("click", function (event) {
+        const move = eventToMove(event);
+        if (move) sendHumanMove(move[0], move[1]);
+    });
+
+    elements.aiButton.addEventListener("click", function () {
+        triggerAiMove(false);
+    });
+    elements.resetButton.addEventListener("click", resetGame);
+    elements.undoButton.addEventListener("click", undoMove);
+    elements.exportButton.addEventListener("click", exportRecord);
+    elements.importButton.addEventListener("click", function () {
+        elements.recordFile.click();
+    });
+    elements.recordFile.addEventListener("change", function () {
+        importRecord(elements.recordFile.files[0]);
+    });
+    elements.modelSelect.addEventListener("change", updateModelSize);
+    elements.simulations.addEventListener("input", function () {
+        updatePresetState();
+        updateSearchSummary();
+        saveSettings();
+    });
+    [elements.temperature, elements.batchSize, elements.threads].forEach(function (element) {
+        element.addEventListener("change", function () {
+            updateSearchSummary();
+            saveSettings();
+        });
+    });
+    elements.autoResponse.addEventListener("change", function () {
+        saveSettings();
+        renderState();
+        maybeAutoRespond();
+    });
+    elements.humanSide.addEventListener("change", function () {
+        saveSettings();
+        renderState();
+        maybeAutoRespond();
+    });
+    document.querySelectorAll(".preset").forEach(function (button) {
+        button.addEventListener("click", function () {
+            elements.simulations.value = button.dataset.sims;
+            updatePresetState();
+            updateSearchSummary();
+            saveSettings();
+        });
+    });
+
+    async function initialize() {
+        const savedModelPath = readSettings();
+        updatePresetState();
+        drawBoard();
+        await Promise.all([fetchModels(savedModelPath), fetchState()]);
+        renderState();
+        maybeAutoRespond();
     }
 
-    async function fetchModels() {
-        try {
-            const res = await fetch('/models');
-            const data = await res.json();
-            const select = document.getElementById('model-select');
-            select.innerHTML = '';
-            
-            if (data.models && data.models.length) {
-                data.models.forEach(m => {
-                    const opt = document.createElement('option');
-                    opt.value = m.path;
-                    opt.innerText = m.name;
-                    select.appendChild(opt);
-                });
-            } else {
-                const opt = document.createElement('option');
-                opt.value = "";
-                opt.innerText = "Default";
-                select.appendChild(opt);
-            }
-        } catch(e) { console.error(e); }
-    }
-
-    function updateUI() {
-        const statusText = document.getElementById('status-text');
-        const dot = document.getElementById('status-dot');
-        const turnText = document.getElementById('turn-text');
-        
-        if (turnText) {
-             turnText.innerText = currentPlayer === 1 ? "Black ⚫" : "White ⚪";
-        }
-        
-        if (gameOver) {
-            if (statusText) statusText.innerText = "Game Over";
-            if (dot) {
-                dot.className = "status-dot";
-                dot.style.background = "red";
-            }
-        } else {
-            if (statusText) statusText.innerText = "Ready";
-            if (dot) dot.className = "status-dot status-active";
-        }
-    }
-
-    function setThinking(thinking, msg="Thinking...") {
-        isThinking = thinking;
-        const statusText = document.getElementById('status-text');
-        const dot = document.getElementById('status-dot');
-        
-        if (thinking) {
-            statusText.innerText = msg;
-            dot.className = "status-dot status-thinking";
-        } else {
-            updateUI();
-        }
-    }
-
-    function log(msg) {
-        const container = document.getElementById('log-container');
-        const time = new Date().toLocaleTimeString();
-        const div = document.createElement('div');
-        div.className = 'log-entry';
-        div.innerHTML = `<span class="log-time">[${time}]</span> ${msg}`;
-        container.appendChild(div);
-        container.scrollTop = container.scrollHeight;
-    }
-    
-    function logError(e) {
-        console.error(e);
-        log("Error: " + e.message);
-        if (e.stack) {
-            // Extract line number
-            const match = e.stack.match(/:(\d+):\d+/);
-            if (match) log("Line: " + match[1]);
-        }
-    }
+    initialize();
 </script>
-
 </body>
 </html>

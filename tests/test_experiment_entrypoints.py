@@ -8,6 +8,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRYPOINTS = (
+    "experiments/inference_vnext/export_onnx.py",
+    "experiments/inference_vnext/validate_engine.py",
     "experiments/nebula_v3/evaluate_checkpoints.py",
     "experiments/nebula_v3/export_onnx.py",
     "experiments/nebula_v3/train.py",

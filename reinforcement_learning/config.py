@@ -71,6 +71,10 @@ MCTS_THREADS = int(os.environ.get('NEBULA_MCTS_THREADS', '32'))
 MCTS_BATCH_SIZE = int(os.environ.get('NEBULA_MCTS_BATCH_SIZE', '64'))
 MCTS_CONCURRENT_GAMES = int(os.environ.get('NEBULA_MCTS_CONCURRENT_GAMES', '12'))
 MCTS_EVAL_CACHE_SIZE = int(os.environ.get('NEBULA_MCTS_EVAL_CACHE_SIZE', '32768'))
+SELFPLAY_PROGRESS_INTERVAL = max(
+    1,
+    int(os.environ.get('NEBULA_SELFPLAY_PROGRESS_INTERVAL', '25')),
+)
 MCTS_CPUCT = float(os.environ.get('NEBULA_MCTS_CPUCT', '1.5'))
 MCTS_WIDENING_BASE = int(os.environ.get('NEBULA_MCTS_WIDENING_BASE', '20'))
 MCTS_WIDENING_SCALE = float(os.environ.get('NEBULA_MCTS_WIDENING_SCALE', '0.25'))

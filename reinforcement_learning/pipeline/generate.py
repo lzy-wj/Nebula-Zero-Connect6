@@ -29,6 +29,11 @@ def normalize_seed(seed):
     return int(seed) % 2_147_483_647
 
 
+def should_report_progress(completed_games):
+    interval = int(getattr(config, 'SELFPLAY_PROGRESS_INTERVAL', 25))
+    return completed_games == 1 or completed_games % max(1, interval) == 0
+
+
 def encode_policy(policy_array):
     """
     Compress policy array to sparse string: idx:prob;idx:prob...
@@ -324,10 +329,12 @@ def worker_process(
                 
         completed_games += 1
         display_total = total_games if total_games is not None else games_to_play
-        print(
-            f"[Worker {worker_id}] 全局第 {game_index + 1}/{display_total} 局 "
-            f"Winner: {winner_str}"
-        )
+        if should_report_progress(completed_games):
+            print(
+                f"[Worker {worker_id}] 已完成 {completed_games} 局 | "
+                f"最近全局编号 {game_index + 1}/{display_total} | "
+                f"Winner: {winner_str}"
+            )
 
     elapsed = time.perf_counter() - worker_started_at
     speed = completed_games / elapsed if elapsed > 0 else 0.0
@@ -475,10 +482,12 @@ def batched_worker_process(
         slot['context'].close()
         completed_games += 1
         display_total = total_games if total_games is not None else games_to_play
-        print(
-            f"[Worker {worker_id}] 全局第 {slot['index'] + 1}/{display_total} 局 "
-            f"Winner: {winner} | 活跃棋局: {len(active_slots)}"
-        )
+        if should_report_progress(completed_games):
+            print(
+                f"[Worker {worker_id}] 已完成 {completed_games} 局 | "
+                f"最近全局编号 {slot['index'] + 1}/{display_total} | "
+                f"Winner: {winner} | 活跃棋局: {len(active_slots)}"
+            )
 
     active_slots = []
     for _ in range(concurrent_games):

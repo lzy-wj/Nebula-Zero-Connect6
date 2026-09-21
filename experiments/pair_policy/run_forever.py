@@ -194,6 +194,12 @@ def sync_summaries(active):
             "gate/candidate_black_win_rate": gate.get("black_win_rate", 0.0),
             "gate/candidate_white_win_rate": gate.get("white_win_rate", 0.0),
             "gate/game_black_win_rate": gate.get("game_black_win_rate", 0.0),
+            "gate/improvement_probability": gate.get(
+                "improvement_probability", 0.0
+            ),
+            "gate/paired_score_standard_error": gate.get(
+                "paired_score_standard_error", 0.0
+            ),
             "gate/accept_rate_20": accept_rate_20,
             "gate/accepted_generation": accepted_generation,
             "gate/incumbent_age": generation - accepted_generation,

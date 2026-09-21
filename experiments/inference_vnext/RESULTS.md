@@ -81,3 +81,19 @@ python reinforcement_learning/pipeline/build_engine.py model.onnx model.engine
 CPU 筛选显示单卡 24–32 个 MCTS 线程最合理，48/56 线程反而下降。GPU 0–3 属于
 NUMA 0，GPU 4–7 属于 NUMA 1；多 worker 应按 GPU 分割本地 CPU 集合。跨 NUMA 对当前
 大模型只有约 0–3% 影响，但快网进入 CPU 受限区后仍应避免线程迁移和同 socket 过量超卖。
+
+## Trained-model gate
+
+训练使用最近 128 代去重 replay、DDP、D4 增强与 V2 策略/价值蒸馏。正式门禁均为
+100 局配对开局、完整换色、每步 1200 simulations。
+
+| Candidate | Batch 64 | Gate vs incumbent | Decision |
+| --- | ---: | ---: | --- |
+| `dual_scale_c256_d14` Pair | 1.836 ms | 40–60 | reject |
+| `dual_scale_c320_d16` Exact | 2.586 ms | 44–56 | reject |
+| `dual_scale_c320_d16` Pair | 2.932 ms | 50–50 | bootstrap only |
+| `sparse_stone_c192_k64` Exact | 0.733 ms | 2–8 smoke | provisional only |
+
+C320 Pair 与 incumbent 的配对胜率为 `50.0% ± 4.0%`，尚未证明更强，因此不替换生产
+模型；但相对当前 Pair 的 6.331 ms，纯推理吞吐提高约 2.16 倍。它被选为下一轮隔离
+自对弈 teacher，待新数据精修并重新通过置信门禁后再考虑晋升。

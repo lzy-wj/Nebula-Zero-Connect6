@@ -19,17 +19,19 @@ checkpoint；仓库只保存代码、配置与可复现实验结论。
 
 ## 训练
 
-Strong 先学习最新 replay 的 MCTS 策略、胜负价值和 V2 教师策略：
+Strong 先学习最新 replay 的 MCTS 策略、胜负价值，以及 V2 教师的策略与价值：
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,7 conda run -n connect6 torchrun \
   --standalone --nproc_per_node=2 \
   experiments/inference_vnext/train.py \
-  --architecture dual_scale_c256_d14 \
+  --architecture dual_scale_c320_d16 \
   --task exact \
   --recent-generations 128 \
-  --epochs 36 \
+  --epochs 48 \
   --batch-size 384 \
+  --distill-policy-weight 0.5 \
+  --distill-value-weight 0.7 \
   --cpu-affinity '0-29;62-91'
 ```
 
@@ -40,18 +42,23 @@ Pair 阶段从最佳 Strong checkpoint 初始化，联合训练第一子、条�
 CUDA_VISIBLE_DEVICES=0,7 conda run -n connect6 torchrun \
   --standalone --nproc_per_node=2 \
   experiments/inference_vnext/train.py \
-  --architecture dual_scale_c256_d14 \
+  --architecture dual_scale_c320_d16 \
   --task pair \
   --init-checkpoint /path/to/strong/best.pth \
   --recent-generations 128 \
   --epochs 24 \
   --batch-size 384 \
+  --distill-policy-weight 0.5 \
+  --distill-value-weight 0.7 \
   --cpu-affinity '0-29;62-91'
 ```
 
 训练入口支持原子 checkpoint、`--resume` 断点续训、DDP、D4 增强和训练/验证棋局
 去重。Fast 模型使用 `sparse_stone_c192_k64`，并通过 `--maximum-stones 64` 限定其
 服务区间。
+
+隔离生成的新 replay 可重复传入 `--data-root` 与历史数据合并。原始自对弈 CSV 先用
+`prepare_replay.py` 做确定性训练/验证切分，不需要复制生产 replay。
 
 ## 导出与基准
 
@@ -60,21 +67,21 @@ CUDA_VISIBLE_DEVICES=0,7 conda run -n connect6 torchrun \
 ```bash
 CUDA_VISIBLE_DEVICES=4 conda run -n connect6 python \
   experiments/inference_vnext/export_onnx.py \
-  --architecture dual_scale_c256_d14 \
+  --architecture dual_scale_c320_d16 \
   --checkpoint /path/to/best.pth \
-  --output /tmp/dual_scale_c256_d14.onnx
+  --output /tmp/dual_scale_c320_d16.onnx
 
 CUDA_VISIBLE_DEVICES=4 \
 NEBULA_BUILD_GPU=0 \
 NEBULA_MCTS_BATCH_SIZE=64 \
 NEBULA_TRT_MAX_BATCH_SIZE=64 \
-NEBULA_TRT_TIMING_CACHE=/tmp/dual_scale_c256_d14.timing.cache \
+NEBULA_TRT_TIMING_CACHE=/tmp/dual_scale_c320_d16.timing.cache \
 conda run -n connect6 python reinforcement_learning/pipeline/build_engine.py \
-  /tmp/dual_scale_c256_d14.onnx /tmp/dual_scale_c256_d14.engine
+  /tmp/dual_scale_c320_d16.onnx /tmp/dual_scale_c320_d16.engine
 
 CUDA_VISIBLE_DEVICES=4 conda run -n connect6 python \
   benchmarks/benchmark_tensorrt_engine.py \
-  --engine /tmp/dual_scale_c256_d14.engine \
+  --engine /tmp/dual_scale_c320_d16.engine \
   --batches 1,2,4,8,16,32,64 --copy-outputs
 ```
 

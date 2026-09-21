@@ -2,6 +2,7 @@ import ctypes
 import numpy as np
 import os
 import time
+import traceback
 import torch
 import tensorrt as trt
 import platform
@@ -24,6 +25,16 @@ default_lib_path = os.path.join(os.path.dirname(__file__), lib_name)
 # 候选 MCTS 可以通过环境变量单独加载，验证通过前不覆盖生产动态库。
 lib_path = os.environ.get('NEBULA_MCTS_LIBRARY', default_lib_path)
 mcts_lib = ctypes.CDLL(lib_path)
+if not hasattr(mcts_lib, 'get_mcts_abi_version'):
+    raise RuntimeError(
+        f"MCTS 动态库 ABI 过旧: {lib_path}；请重新运行 core/compile_mcts.py"
+    )
+mcts_lib.get_mcts_abi_version.argtypes = []
+mcts_lib.get_mcts_abi_version.restype = ctypes.c_int
+if mcts_lib.get_mcts_abi_version() < 2:
+    raise RuntimeError(
+        f"MCTS 动态库不支持安全回调状态: {lib_path}；请重新编译"
+    )
 
 # 定义 C++ 函数签名
 mcts_lib.init_game.argtypes = []
@@ -33,7 +44,7 @@ mcts_lib.play_move.argtypes = [ctypes.c_int]
 mcts_lib.play_move.restype = None
 
 mcts_lib.run_mcts_simulations.argtypes = [ctypes.c_int]
-mcts_lib.run_mcts_simulations.restype = None
+mcts_lib.run_mcts_simulations.restype = ctypes.c_int
 
 mcts_lib.get_best_move.argtypes = [ctypes.c_float]
 mcts_lib.get_best_move.restype = ctypes.c_int
@@ -123,13 +134,13 @@ if HAS_MULTI_CONTEXT:
     mcts_lib.play_move_context.argtypes = [ctypes.c_void_p, ctypes.c_int]
     mcts_lib.play_move_context.restype = None
     mcts_lib.run_mcts_simulations_context.argtypes = [ctypes.c_void_p, ctypes.c_int]
-    mcts_lib.run_mcts_simulations_context.restype = None
+    mcts_lib.run_mcts_simulations_context.restype = ctypes.c_int
     mcts_lib.run_mcts_simulations_multi.argtypes = [
         ctypes.POINTER(ctypes.c_void_p),
         ctypes.POINTER(ctypes.c_int),
         ctypes.c_int,
     ]
-    mcts_lib.run_mcts_simulations_multi.restype = None
+    mcts_lib.run_mcts_simulations_multi.restype = ctypes.c_int
     mcts_lib.get_best_move_context.argtypes = [ctypes.c_void_p, ctypes.c_float]
     mcts_lib.get_best_move_context.restype = ctypes.c_int
     mcts_lib.get_root_value_context.argtypes = [ctypes.c_void_p]
@@ -145,6 +156,9 @@ if HAS_MULTI_CONTEXT:
     if hasattr(mcts_lib, 'get_root_active_action_count_context'):
         mcts_lib.get_root_active_action_count_context.argtypes = [ctypes.c_void_p]
         mcts_lib.get_root_active_action_count_context.restype = ctypes.c_int
+    if hasattr(mcts_lib, 'get_root_virtual_loss_context'):
+        mcts_lib.get_root_virtual_loss_context.argtypes = [ctypes.c_void_p]
+        mcts_lib.get_root_virtual_loss_context.restype = ctypes.c_longlong
     if hasattr(mcts_lib, 'print_top_moves_context'):
         mcts_lib.print_top_moves_context.argtypes = [ctypes.c_void_p]
         mcts_lib.print_top_moves_context.restype = None
@@ -162,10 +176,10 @@ if HAS_MULTI_CONTEXT:
 # boards_ptr: int* (flattened batch)
 # policies_ptr: float* (flattened batch)
 # values_ptr: float*
-CALLBACK_FUNC_TYPE = ctypes.CFUNCTYPE(None, ctypes.c_int, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float))
+CALLBACK_FUNC_TYPE = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float))
 
 PAIR_CALLBACK_FUNC_TYPE = ctypes.CFUNCTYPE(
-    None,
+    ctypes.c_int,
     ctypes.c_int,
     ctypes.POINTER(ctypes.c_int),
     ctypes.POINTER(ctypes.c_float),
@@ -174,6 +188,8 @@ PAIR_CALLBACK_FUNC_TYPE = ctypes.CFUNCTYPE(
     ctypes.POINTER(ctypes.c_uint16),
     ctypes.POINTER(ctypes.c_uint16),
 )
+
+_ACTIVE_ENGINE_TOKEN = None
 
 mcts_lib.set_eval_callback.argtypes = [CALLBACK_FUNC_TYPE]
 mcts_lib.set_eval_callback.restype = None
@@ -212,6 +228,8 @@ class MCTSEngine:
     def __init__(self, engine_path, device='cuda', pair_heads_path=None):
         self.device = device
         self.engine_path = engine_path
+        self._callback_error = None
+        self._engine_token = object()
         
         # 1. Initialize TensorRT
         self.logger = trt.Logger(trt.Logger.ERROR)
@@ -462,7 +480,7 @@ class MCTSEngine:
             self.pair_black_refresh_visits = int(
                 os.environ.get(
                     'NEBULA_PAIR_REFRESH_VISITS_BLACK',
-                    str(self.pair_refresh_visits),
+                    '1000000000',
                 )
             )
             self.pair_white_refresh_visits = int(
@@ -480,7 +498,7 @@ class MCTSEngine:
                     dtype=np.float32,
                 )
             self.pair_deferred_refresh = (
-                os.environ.get('NEBULA_PAIR_DEFER_REFRESH', '1') == '1'
+                os.environ.get('NEBULA_PAIR_DEFER_REFRESH', '0') == '1'
             )
             self.pair_value_scale = float(
                 os.environ.get('NEBULA_PAIR_VALUE_SCALE', '1.0')
@@ -493,6 +511,9 @@ class MCTSEngine:
     def _activate_callbacks(self):
         """多个 Python 引擎共享动态库时，搜索前显式切换完整回调集合。"""
 
+        global _ACTIVE_ENGINE_TOKEN
+        if _ACTIVE_ENGINE_TOKEN is self._engine_token:
+            return
         mcts_lib.set_eval_callback(self.c_callback)
         if hasattr(mcts_lib, 'set_pair_eval_callback'):
             callback = (
@@ -530,6 +551,7 @@ class MCTSEngine:
                 1 if self.pair_deferred_refresh else 0
             )
             mcts_lib.set_pair_value_scale(self.pair_value_scale)
+        _ACTIVE_ENGINE_TOKEN = self._engine_token
 
     def _set_input_shape_checked(self, name, shape):
         """设置动态形状，并在运行配置超过引擎 profile 时尽早报错。"""
@@ -820,13 +842,18 @@ class MCTSEngine:
     def _eval_callback(self, batch_size, boards_ptr, policies_ptr, values_ptr):
         """把整次 GPU 回调固定到非默认流，避免 TensorRT 的默认流同步。"""
 
-        with torch.cuda.stream(self.inference_stream):
-            self._eval_callback_on_stream(
-                batch_size,
-                boards_ptr,
-                policies_ptr,
-                values_ptr,
-            )
+        try:
+            with torch.cuda.stream(self.inference_stream):
+                self._eval_callback_on_stream(
+                    batch_size,
+                    boards_ptr,
+                    policies_ptr,
+                    values_ptr,
+                )
+            return 0
+        except Exception as error:
+            self._record_callback_error(error, batch_size, policies_ptr, values_ptr)
+            return 1
 
     def _eval_pair_callback(
         self,
@@ -840,14 +867,64 @@ class MCTSEngine:
     ):
         """增强引擎回调：主输出与成对落子辅助输出只同步一次。"""
 
-        with torch.cuda.stream(self.inference_stream):
-            self._eval_callback_on_stream(
+        try:
+            with torch.cuda.stream(self.inference_stream):
+                self._eval_callback_on_stream(
+                    batch_size,
+                    boards_ptr,
+                    policies_ptr,
+                    values_ptr,
+                    pair_ptrs=(candidate_ptr, first_ptr, pair_values_ptr),
+                )
+            return 0
+        except Exception as error:
+            self._record_callback_error(
+                error,
                 batch_size,
-                boards_ptr,
                 policies_ptr,
                 values_ptr,
                 pair_ptrs=(candidate_ptr, first_ptr, pair_values_ptr),
             )
+            return 1
+
+    def _record_callback_error(
+        self,
+        error,
+        batch_size,
+        policies_ptr,
+        values_ptr,
+        pair_ptrs=None,
+    ):
+        """Convert callback exceptions into a C status and deterministic buffers."""
+
+        self._callback_error = (error, traceback.format_exc())
+        np.ctypeslib.as_array(
+            policies_ptr,
+            shape=(batch_size * 361,),
+        ).fill(0.0)
+        np.ctypeslib.as_array(values_ptr, shape=(batch_size,)).fill(0.0)
+        if pair_ptrs is not None:
+            candidate_ptr, first_ptr, pair_values_ptr = pair_ptrs
+            factor_size = batch_size * 361 * self.pair_rank
+            np.ctypeslib.as_array(candidate_ptr, shape=(factor_size,)).fill(0)
+            np.ctypeslib.as_array(first_ptr, shape=(factor_size,)).fill(0)
+            np.ctypeslib.as_array(
+                pair_values_ptr,
+                shape=(batch_size * 361,),
+            ).fill(0)
+
+    def _begin_search(self):
+        self._callback_error = None
+
+    def _finish_search(self, status):
+        if status == 0 and self._callback_error is None:
+            return
+        callback_error = self._callback_error
+        self._callback_error = None
+        if callback_error is None:
+            raise RuntimeError("MCTS TensorRT callback failed")
+        error, formatted = callback_error
+        raise RuntimeError(f"MCTS TensorRT callback failed:\n{formatted}") from error
 
     def _eval_callback_on_stream(
         self,
@@ -1096,8 +1173,10 @@ class MCTSEngine:
 
     def run_simulations(self, simulations):
         """Run MCTS simulations without returning a move (for dynamic search)"""
+        self._begin_search()
         self._activate_callbacks()
-        mcts_lib.run_mcts_simulations(simulations)
+        status = mcts_lib.run_mcts_simulations(simulations)
+        self._finish_search(status)
 
     @property
     def supports_multi_context(self):
@@ -1135,22 +1214,26 @@ class MCTSEngine:
             raise ValueError("模拟次数不能为负数")
 
         # 多个 MCTSEngine 仍共享同一个 C++ 动态库；调用前明确激活本模型。
+        self._begin_search()
         self._activate_callbacks()
         handle_array = (ctypes.c_void_p * len(contexts))(
             *(context.handle for context in contexts)
         )
         budget_array = (ctypes.c_int * len(budgets))(*budgets)
-        mcts_lib.run_mcts_simulations_multi(
+        status = mcts_lib.run_mcts_simulations_multi(
             handle_array,
             budget_array,
             len(contexts),
         )
+        self._finish_search(status)
         
     def get_mcts_move(self, simulations=1000, temperature=0.0):
         # Support existing calls but allow 0 simulations if run_simulations was called manually
         if simulations > 0:
+            self._begin_search()
             self._activate_callbacks()
-            mcts_lib.run_mcts_simulations(simulations)
+            status = mcts_lib.run_mcts_simulations(simulations)
+            self._finish_search(status)
         return mcts_lib.get_best_move(temperature)
         
     def get_win_rate(self):

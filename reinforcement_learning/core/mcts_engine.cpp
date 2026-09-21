@@ -226,8 +226,8 @@ struct EvalCacheEntry {
     std::shared_ptr<const PairData> pair_data;
 };
 
-using EvalCallback = void (*)(int, const int*, float*, float*);
-using PairEvalCallback = void (*)(
+using EvalCallback = int (*)(int, const int*, float*, float*);
+using PairEvalCallback = int (*)(
     int,
     const int*,
     float*,
@@ -286,6 +286,7 @@ struct PairRefreshJob {
     MCTSNode* node = nullptr;
     Connect6Board board;
     BoardKey key;
+    std::array<float, BOARD_CELLS> policy{};
 };
 
 struct SearchWorkspace {
@@ -866,6 +867,20 @@ void policy_impl(const MCTSContext& context, float* output) {
         visit_sum += static_cast<float>(edge.visit_count.load(std::memory_order_relaxed));
     }
     if (visit_sum <= 0.0f) {
+        float prior_sum = 0.0f;
+        for (const auto& edge : context.root->children) {
+            prior_sum += std::max(edge.prior_prob, 0.0f);
+        }
+        if (prior_sum > 0.0f) {
+            for (const auto& edge : context.root->children) {
+                output[edge.move] = std::max(edge.prior_prob, 0.0f) / prior_sum;
+            }
+        } else {
+            const float uniform = 1.0f / static_cast<float>(context.root->children.size());
+            for (const auto& edge : context.root->children) {
+                output[edge.move] = uniform;
+            }
+        }
         return;
     }
     for (const auto& edge : context.root->children) {
@@ -930,7 +945,7 @@ void accumulate_second_stone_visits(
     }
 }
 
-void run_simulations_impl(
+bool run_simulations_impl(
     const std::vector<MCTSContext*>& contexts,
     const std::vector<int>& requested_simulations
 ) {
@@ -939,7 +954,7 @@ void run_simulations_impl(
         || contexts.empty()
         || contexts.size() != requested_simulations.size()
     ) {
-        return;
+        return false;
     }
 
     std::vector<int> remaining(requested_simulations.size(), 0);
@@ -951,7 +966,7 @@ void run_simulations_impl(
         }
     }
     if (total_remaining == 0) {
-        return;
+        return true;
     }
 
     // 每棵树仍保留原来的 G_BATCH_SIZE 个虚拟选择，多个棋局只在网络评估
@@ -998,8 +1013,10 @@ void run_simulations_impl(
     auto& board_hash_values = G_SEARCH_WORKSPACE.board_hash_values;
     std::deque<PairRefreshJob> refresh_queue;
     std::vector<PairRefreshJob> callback_refresh_jobs(G_BATCH_SIZE);
+    std::vector<PairRefreshJob> completed_refresh_jobs;
 
     while (total_remaining > 0) {
+        completed_refresh_jobs.clear();
         int active_batch = 0;
         for (std::size_t context_index = 0; context_index < contexts.size(); ++context_index) {
             if (remaining[context_index] <= 0 || contexts[context_index] == nullptr) {
@@ -1341,8 +1358,9 @@ void run_simulations_impl(
                         + (exact_batch + refresh_index) * BOARD_CELLS
                 );
             }
+            int callback_status = 0;
             if (G_PAIR_EVAL_CALLBACK != nullptr) {
-                G_PAIR_EVAL_CALLBACK(
+                callback_status = G_PAIR_EVAL_CALLBACK(
                     callback_batch,
                     callback_boards.data(),
                     callback_policies.data(),
@@ -1352,12 +1370,58 @@ void run_simulations_impl(
                     callback_pair_values.data()
                 );
             } else {
-                G_EVAL_CALLBACK(
+                callback_status = G_EVAL_CALLBACK(
                     callback_batch,
                     callback_boards.data(),
                     callback_policies.data(),
                     callback_values.data()
                 );
+            }
+            if (callback_status != 0) {
+                // ctypes callbacks cannot throw through C++. Undo virtual losses and
+                // abort before any failed output is cached or expanded into the tree.
+                for (int batch_index = 0; batch_index < active_batch; ++batch_index) {
+                    if (!batch_valid[batch_index]) {
+                        continue;
+                    }
+                    MCTSEdge** path = batch_paths.data() + batch_index * BOARD_CELLS;
+                    for (int path_index = 0;
+                         path_index < batch_path_lengths[batch_index];
+                         ++path_index) {
+                        path[path_index]->virtual_loss.fetch_sub(
+                            1,
+                            std::memory_order_relaxed
+                        );
+                    }
+                }
+                for (PairRefreshJob& job : refresh_queue) {
+                    if (job.node != nullptr) {
+                        job.node->pair_refresh_queued.store(
+                            false,
+                            std::memory_order_relaxed
+                        );
+                    }
+                }
+                for (int refresh_index = 0;
+                     refresh_index < refresh_batch;
+                     ++refresh_index) {
+                    PairRefreshJob& job = callback_refresh_jobs[refresh_index];
+                    if (job.node != nullptr) {
+                        job.node->pair_refresh_queued.store(
+                            false,
+                            std::memory_order_relaxed
+                        );
+                    }
+                }
+                for (PairRefreshJob& job : completed_refresh_jobs) {
+                    if (job.node != nullptr) {
+                        job.node->pair_refresh_queued.store(
+                            false,
+                            std::memory_order_relaxed
+                        );
+                    }
+                }
+                return false;
             }
             G_TOTAL_NEURAL_EVALUATIONS += callback_batch;
             for (int callback_index = 0; callback_index < exact_batch; ++callback_index) {
@@ -1414,22 +1478,14 @@ void run_simulations_impl(
                 PairRefreshJob& job = callback_refresh_jobs[refresh_index];
                 const float* source_policy = callback_policies.data()
                     + callback_index * BOARD_CELLS;
-                if (job.node != nullptr) {
-                    if (job.node->provisional_pair) {
-                        refresh_node_priors(job.node, job.board, source_policy);
-                        G_TOTAL_PAIR_EXACT_REFRESHES++;
-                    }
-                    job.node->pair_refresh_queued.store(
-                        false,
-                        std::memory_order_relaxed
-                    );
-                }
+                std::copy_n(source_policy, BOARD_CELLS, job.policy.begin());
                 store_eval_cache(
                     job.key,
                     source_policy,
                     callback_values[callback_index],
                     nullptr
                 );
+                completed_refresh_jobs.push_back(std::move(job));
             }
             miss_start += exact_batch;
         }
@@ -1469,12 +1525,15 @@ void run_simulations_impl(
                 && node->provisional_pair
                 && !unique_use_pair[slot]
             ) {
-                refresh_node_priors(
-                    node,
-                    board,
-                    unique_policies.data() + slot * BOARD_CELLS
+                PairRefreshJob job;
+                job.node = node;
+                job.board = board;
+                std::copy_n(
+                    unique_policies.data() + slot * BOARD_CELLS,
+                    BOARD_CELLS,
+                    job.policy.begin()
                 );
-                G_TOTAL_PAIR_EXACT_REFRESHES++;
+                completed_refresh_jobs.push_back(std::move(job));
             } else if (
                 node != nullptr
                 && !unique_use_pair[slot]
@@ -1487,6 +1546,7 @@ void run_simulations_impl(
                 G_PAIR_DEFERRED_REFRESH
                 && node != nullptr
                 && node->provisional_pair
+                && unique_use_pair[slot]
                 && unique_defer_refresh[slot]
             ) {
                 bool expected = false;
@@ -1510,6 +1570,17 @@ void run_simulations_impl(
                 black_value
             );
         }
+        // Refresh may reorder a node's children. Apply it only after every path
+        // selected from the old ordering has finished backpropagation.
+        for (PairRefreshJob& job : completed_refresh_jobs) {
+            if (job.node != nullptr) {
+                if (job.node->provisional_pair) {
+                    refresh_node_priors(job.node, job.board, job.policy.data());
+                    G_TOTAL_PAIR_EXACT_REFRESHES++;
+                }
+                job.node->pair_refresh_queued.store(false, std::memory_order_relaxed);
+            }
+        }
     }
     // 未凑满一个 batch 的后台刷新不单独触发 GPU；下次搜索再次访问时可重新入队。
     for (PairRefreshJob& job : refresh_queue) {
@@ -1517,11 +1588,17 @@ void run_simulations_impl(
             job.node->pair_refresh_queued.store(false, std::memory_order_relaxed);
         }
     }
+    return true;
 }
 
 }  // namespace
 
 extern "C" {
+
+EXPORT int get_mcts_abi_version() {
+    // Version 2 adds status-returning evaluation callbacks and search entry points.
+    return 2;
+}
 
 EXPORT void set_eval_callback(EvalCallback callback) {
     // 不同回调通常代表不同网络，旧网络结果绝不能泄漏到新网络。
@@ -1545,11 +1622,18 @@ EXPORT void set_pair_policy_params(
     int refresh_visits
 ) {
     if (relative_bias == nullptr || relative_count <= 0) {
+        if (G_PAIR_PARAMS_READY) {
+            clear_eval_cache_impl();
+        }
         G_PAIR_PARAMS_READY = false;
         return;
     }
+    const int next_refresh_visits = std::max(refresh_visits, 1);
+    bool changed = !G_PAIR_PARAMS_READY
+        || G_PAIR_BASE_SCALE != base_scale
+        || G_PAIR_REFRESH_VISITS != next_refresh_visits;
     G_PAIR_BASE_SCALE = base_scale;
-    G_PAIR_REFRESH_VISITS = std::max(refresh_visits, 1);
+    G_PAIR_REFRESH_VISITS = next_refresh_visits;
     G_PAIR_REFRESH_VISITS_BLACK = G_PAIR_REFRESH_VISITS;
     G_PAIR_REFRESH_VISITS_WHITE = G_PAIR_REFRESH_VISITS;
     constexpr int relative_size = BOARD_SIZE * 2 - 1;
@@ -1562,23 +1646,30 @@ EXPORT void set_pair_policy_params(
                     - first_row + BOARD_SIZE - 1;
                 const int relative_column = move % BOARD_SIZE
                     - first_column + BOARD_SIZE - 1;
-                G_PAIR_RELATIVE_LOOKUP[first * BOARD_CELLS + move] = relative_bias[
+                const int destination = first * BOARD_CELLS + move;
+                const float value = relative_bias[
                     relative_row * relative_size + relative_column
                 ];
+                changed = changed || G_PAIR_RELATIVE_LOOKUP[destination] != value;
+                G_PAIR_RELATIVE_LOOKUP[destination] = value;
             }
         }
     } else if (relative_count == BOARD_CELLS * BOARD_CELLS) {
-        std::copy_n(
-            relative_bias,
-            BOARD_CELLS * BOARD_CELLS,
-            G_PAIR_RELATIVE_LOOKUP.begin()
-        );
+        for (int index = 0; index < BOARD_CELLS * BOARD_CELLS; ++index) {
+            changed = changed || G_PAIR_RELATIVE_LOOKUP[index] != relative_bias[index];
+            G_PAIR_RELATIVE_LOOKUP[index] = relative_bias[index];
+        }
     } else {
+        if (G_PAIR_PARAMS_READY) {
+            clear_eval_cache_impl();
+        }
         G_PAIR_PARAMS_READY = false;
         return;
     }
     G_PAIR_PARAMS_READY = true;
-    clear_eval_cache_impl();
+    if (changed) {
+        clear_eval_cache_impl();
+    }
 }
 
 EXPORT void set_pair_refresh_mode(int deferred) {
@@ -1602,12 +1693,21 @@ EXPORT void set_pair_relative_gate(
         * (BOARD_SIZE * 2 - 1)
         * PAIR_RANK;
     if (gate == nullptr || value_count != expected || rank != PAIR_RANK) {
+        if (G_PAIR_RELATIVE_GATE_READY) {
+            clear_eval_cache_impl();
+        }
         G_PAIR_RELATIVE_GATE_READY = false;
         return;
     }
-    std::copy_n(gate, expected, G_PAIR_RELATIVE_GATE.begin());
+    bool changed = !G_PAIR_RELATIVE_GATE_READY;
+    for (int index = 0; index < expected; ++index) {
+        changed = changed || G_PAIR_RELATIVE_GATE[index] != gate[index];
+        G_PAIR_RELATIVE_GATE[index] = gate[index];
+    }
     G_PAIR_RELATIVE_GATE_READY = true;
-    clear_eval_cache_impl();
+    if (changed) {
+        clear_eval_cache_impl();
+    }
 }
 
 EXPORT void set_pair_value_scale(float scale) {
@@ -1718,8 +1818,8 @@ EXPORT void play_move(int move) {
     play_move_impl(G_DEFAULT_CONTEXT, move);
 }
 
-EXPORT void run_mcts_simulations(int simulations) {
-    run_simulations_impl({&G_DEFAULT_CONTEXT}, {simulations});
+EXPORT int run_mcts_simulations(int simulations) {
+    return run_simulations_impl({&G_DEFAULT_CONTEXT}, {simulations}) ? 0 : 1;
 }
 
 EXPORT int get_best_move(float temperature) {
@@ -1773,19 +1873,23 @@ EXPORT void play_move_context(void* handle, int move) {
     }
 }
 
-EXPORT void run_mcts_simulations_context(void* handle, int simulations) {
+EXPORT int run_mcts_simulations_context(void* handle, int simulations) {
     if (handle != nullptr) {
-        run_simulations_impl({static_cast<MCTSContext*>(handle)}, {simulations});
+        return run_simulations_impl(
+            {static_cast<MCTSContext*>(handle)},
+            {simulations}
+        ) ? 0 : 1;
     }
+    return 1;
 }
 
-EXPORT void run_mcts_simulations_multi(
+EXPORT int run_mcts_simulations_multi(
     void* const* handles,
     const int* simulations,
     int context_count
 ) {
     if (handles == nullptr || simulations == nullptr || context_count <= 0) {
-        return;
+        return 1;
     }
     std::vector<MCTSContext*> contexts;
     std::vector<int> budgets;
@@ -1795,7 +1899,7 @@ EXPORT void run_mcts_simulations_multi(
         contexts.push_back(static_cast<MCTSContext*>(handles[index]));
         budgets.push_back(simulations[index]);
     }
-    run_simulations_impl(contexts, budgets);
+    return run_simulations_impl(contexts, budgets) ? 0 : 1;
 }
 
 EXPORT int get_best_move_context(void* handle, float temperature) {
@@ -1832,6 +1936,21 @@ EXPORT int get_root_active_action_count_context(void* handle) {
     }
     const MCTSContext* context = static_cast<MCTSContext*>(handle);
     return context->root ? active_child_count(*context->root) : 0;
+}
+
+EXPORT long long get_root_virtual_loss_context(void* handle) {
+    if (handle == nullptr) {
+        return 0;
+    }
+    const MCTSContext* context = static_cast<MCTSContext*>(handle);
+    if (!context->root) {
+        return 0;
+    }
+    long long total = 0;
+    for (const MCTSEdge& edge : context->root->children) {
+        total += edge.virtual_loss.load(std::memory_order_relaxed);
+    }
+    return total;
 }
 
 EXPORT void print_top_moves_context(void* handle) {

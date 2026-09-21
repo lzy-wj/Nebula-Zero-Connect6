@@ -158,9 +158,8 @@ def worker_process(
             mcts_opponent.set_random_seed(normalize_seed(game_seed + 1))
         np.random.seed(game_seed)
         game = Connect6Game()
-        # C++ 搜索状态是进程内单例；每局开始时明确切回当前模型。
+        # C++ 搜索状态是进程内单例；搜索入口会激活当前模型的完整回调集合。
         from core.mcts import mcts_lib
-        mcts_lib.set_eval_callback(mcts.c_callback)
         mcts.reset()
             
         # Determine Game Mode: Self-Play or Asymmetric
@@ -215,9 +214,8 @@ def worker_process(
                             if game.current_player == 1: active_mcts = mcts_opponent
                             else: active_mcts = mcts
 
-                        # 两个 Python 包装器共享同一个 C++ 全局棋盘和回调。
-                        # 切换模型时必须重新注册回调并重放局面，否则会串树、串模型。
-                        mcts_lib.set_eval_callback(active_mcts.c_callback)
+                        # 两个 Python 包装器共享同一个 C++ 全局棋盘。切换模型时
+                        # 重放局面；搜索入口负责原子地切换整套回调和 pair 参数。
                         mcts_lib.init_game()
                         for historical_move in game.moves:
                             parsed = game._parse_coord(historical_move)

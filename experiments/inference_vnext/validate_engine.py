@@ -18,6 +18,7 @@ def main():
     )
     parser.add_argument("--architecture", required=True)
     parser.add_argument("--engine", required=True)
+    parser.add_argument("--checkpoint", default=None)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--board-seed", type=int, default=99)
     parser.add_argument("--stone-counts", default="0,9,65,97,180")
@@ -51,6 +52,14 @@ def main():
     torch.manual_seed(args.seed)
     device = torch.device("cuda:0")
     model = build_architecture(args.architecture)
+    checkpoint = None
+    if args.checkpoint:
+        checkpoint = torch.load(
+            args.checkpoint,
+            map_location="cpu",
+            weights_only=False,
+        )
+        model.load_state_dict(checkpoint["model_state_dict"])
     model = model.to(device=device, dtype=torch.float16).eval()
     if args.pair:
         wrapper = FusedPairSelfPlayWrapper(
@@ -58,14 +67,11 @@ def main():
             compute_dtype=torch.float16,
             pair_rank=args.pair_rank,
         ).to(device=device).eval()
-        for module in (
-            wrapper.candidate_projection,
-            wrapper.first_projection,
-            wrapper.pair_global_projection,
-            wrapper.pair_action_projection,
-            wrapper.pair_value_output,
-        ):
-            module.to(dtype=torch.float16)
+        if checkpoint is not None:
+            if "pair_state_dict" not in checkpoint:
+                raise ValueError("pair validation requires pair_state_dict")
+            wrapper.pair_heads.load_state_dict(checkpoint["pair_state_dict"])
+        wrapper.pair_heads.to(dtype=torch.float16)
         output_names = [
             "policy1",
             "value",

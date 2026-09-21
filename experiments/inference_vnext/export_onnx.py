@@ -24,6 +24,11 @@ def main():
     )
     parser.add_argument("--architecture", choices=sorted(ARCHITECTURES), required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--checkpoint",
+        default=None,
+        help="optional vNext checkpoint containing model and pair states",
+    )
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument(
@@ -43,6 +48,20 @@ def main():
     torch.manual_seed(args.seed)
     device = torch.device("cuda:0")
     model = build_architecture(args.architecture)
+    checkpoint = None
+    if args.checkpoint:
+        checkpoint = torch.load(
+            args.checkpoint,
+            map_location="cpu",
+            weights_only=False,
+        )
+        checkpoint_architecture = checkpoint.get("architecture")
+        if checkpoint_architecture and checkpoint_architecture != args.architecture:
+            raise ValueError(
+                f"checkpoint architecture {checkpoint_architecture!r} does not match "
+                f"{args.architecture!r}"
+            )
+        model.load_state_dict(checkpoint["model_state_dict"])
     parameter_count = model.parameter_count
     model = model.to(device=device, dtype=torch.float16).eval()
     if args.pair:
@@ -51,14 +70,11 @@ def main():
             compute_dtype=torch.float16,
             pair_rank=args.pair_rank,
         ).to(device=device).eval()
-        for module in (
-            wrapper.candidate_projection,
-            wrapper.first_projection,
-            wrapper.pair_global_projection,
-            wrapper.pair_action_projection,
-            wrapper.pair_value_output,
-        ):
-            module.to(dtype=torch.float16)
+        if checkpoint is not None:
+            if "pair_state_dict" not in checkpoint:
+                raise ValueError("pair export requires pair_state_dict in checkpoint")
+            wrapper.pair_heads.load_state_dict(checkpoint["pair_state_dict"])
+        wrapper.pair_heads.to(dtype=torch.float16)
         output_names = [
             "policy1",
             "value",

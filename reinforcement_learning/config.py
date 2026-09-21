@@ -152,7 +152,8 @@ OPPONENT_ENGINE_PATH = os.path.join(CHECKPOINT_DIR, 'opponent_model.engine')
 # ==================================
 # 评估参数
 # ==================================
-EVAL_GAMES = 30           # 评估时每个对手的对局数
+EVAL_GAMES = int(os.environ.get('NEBULA_EVAL_GAMES', '200'))
+EVAL_BENCHMARK_GAMES = int(os.environ.get('NEBULA_EVAL_BENCHMARK_GAMES', '30'))
 EVAL_SIMULATIONS = 1200   # 评估时的 MCTS 模拟次数
 EVAL_SEED = 2026          # 固定开局套件，保证跨代可比较
 EVAL_OPENING_STONES = 5   # 每组换色对局共享的中心区域随机开局
@@ -171,8 +172,16 @@ EVAL_GENERATION_OFFSETS = [10, 20, 50]
 # ==================================
 # 门控阈值
 # ==================================
-GATING_MIN_WIN_RATE = 0.5       # 最低整体胜率（低于此值不更新主模型）
-GATING_MIN_WHITE_WIN_RATE = 0.1  # 最低白棋胜率（防止黑棋偏向）
+GATING_MIN_WIN_RATE = float(os.environ.get('NEBULA_GATING_MIN_SCORE', '0.5'))
+GATING_MIN_CONFIDENCE = float(os.environ.get('NEBULA_GATING_MIN_CONFIDENCE', '0.9'))
+GATING_MIN_PAIRS = int(os.environ.get('NEBULA_GATING_MIN_PAIRS', '50'))
+GATING_MIN_WHITE_WIN_RATE = float(os.environ.get('NEBULA_GATING_MIN_WHITE', '0.2'))
+GATING_MIN_GAME_BLACK_WIN_RATE = float(
+    os.environ.get('NEBULA_GATING_MIN_GAME_BLACK', '0.35')
+)
+GATING_MAX_GAME_BLACK_WIN_RATE = float(
+    os.environ.get('NEBULA_GATING_MAX_GAME_BLACK', '0.65')
+)
 
 # ==================================
 # 热启动参数

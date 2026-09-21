@@ -1,9 +1,6 @@
 import sys
 import os
-import time
 import argparse
-import shutil
-import glob
 import json
 import numpy as np
 import torch
@@ -14,6 +11,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from core.connect6_game import Connect6Game
 from core.mcts import MCTSEngine
+from gating import paired_score_statistics
 import config
 
 # Cross-platform Python executable
@@ -23,8 +21,8 @@ def run_command(cmd, env_vars=None):
     print(f"Running: {cmd}")
     env = os.environ.copy()
     if env_vars:
-        env.update(env_vars)
-    subprocess.check_call(cmd, shell=True, env=env)
+        env.update({key: str(value) for key, value in env_vars.items()})
+    subprocess.run(cmd, check=True, env=env)
 
 def convert_to_engine(pth_path, engine_path, gpu_id):
     """
@@ -36,20 +34,20 @@ def convert_to_engine(pth_path, engine_path, gpu_id):
     
     print(f"Converting {pth_path} to {engine_path}...")
     
-    # 1. Export ONNX
     onnx_path = engine_path.replace('.engine', '.onnx')
     script_export = os.path.join(config.BASE_DIR, 'pipeline/export_onnx.py')
-    cmd_export = f"\"{PYTHON}\" {script_export} {pth_path} {onnx_path}"
-    run_command(cmd_export, env_vars={'CUDA_VISIBLE_DEVICES': str(gpu_id)})
-    
-    # 2. Build Engine
+    cmd_export = [PYTHON, script_export, pth_path, onnx_path]
     script_build = os.path.join(config.BASE_DIR, 'pipeline/build_engine.py')
-    cmd_build = f"\"{PYTHON}\" {script_build} {onnx_path} {engine_path}"
-    run_command(cmd_build, env_vars={'CUDA_VISIBLE_DEVICES': str(gpu_id)})
-    
-    # Cleanup ONNX
-    if os.path.exists(onnx_path):
-        os.remove(onnx_path)
+    cmd_build = [PYTHON, script_build, onnx_path, engine_path]
+    environment = {'CUDA_VISIBLE_DEVICES': str(gpu_id)}
+    try:
+        run_command(cmd_export, env_vars=environment)
+        run_command(cmd_build, env_vars=environment)
+        if not os.path.isfile(engine_path):
+            raise RuntimeError(f"Engine build produced no output: {engine_path}")
+    finally:
+        if os.path.exists(onnx_path):
+            os.remove(onnx_path)
 
 def plot_results(results, generation, save_path):
     """
@@ -184,9 +182,6 @@ def play_match(
     engine2: Opponent
     Returns: dict with detailed stats
     """
-    save_data = False # Hardcoded for now, or passed via args?
-    # Let's make it an argument if we can, but simpler to just hardcode list accumulation
-    # and return it.
     collected_data = [] # List of (moves_str, winner, policy_str, bonus_str)
     
     os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
@@ -229,8 +224,7 @@ def play_match(
             engine.set_deterministic_selection(True)
         
     except Exception as e:
-        print(f"Error initializing engines: {e}")
-        return {}, []
+        raise RuntimeError("Failed to initialize evaluation engines") from e
 
     stats = {
         'wins': 0, 'losses': 0, 'draws': 0,
@@ -238,6 +232,7 @@ def play_match(
         'black_wins': 0, 'black_games': 0,
         'white_wins': 0, 'white_games': 0,
         'game_black_wins': 0, 'game_white_wins': 0,
+        'engine1_scores': [],
     }
 
     paired_openings = build_paired_openings(games, seed, opening_stones)
@@ -277,12 +272,9 @@ def play_match(
             else: # White
                 current_mcts = white_player
             
-            # 1. Set Callback
-            # This redirects the C++ engine to use the correct neural network
+            # Reset and replay. get_mcts_move() activates the selected model's
+            # complete callback bundle before entering C++.
             from core.mcts import mcts_lib
-            mcts_lib.set_eval_callback(current_mcts.c_callback)
-            
-            # 2. Reset and Replay
             # We must clear the tree because it contains nodes from the other player's network
             mcts_lib.init_game()
             for m_str in game.moves:
@@ -319,6 +311,7 @@ def play_match(
                 if game.winner == 2: # Draw
                     stats['draws'] += 1
                     stats['draw_steps'].append(steps)
+                    stats['engine1_scores'].append(0.5)
                     print(f"Game {i+1} Result: Draw ({steps} moves)")
                 elif game.winner == 1: # Black Wins
                     stats['game_black_wins'] += 1
@@ -326,10 +319,12 @@ def play_match(
                         stats['wins'] += 1
                         stats['win_steps'].append(steps)
                         stats['black_wins'] += 1
+                        stats['engine1_scores'].append(1.0)
                         print(f"Game {i+1} Result: Current Model (Black) Wins ({steps} moves)")
                     else:
                         stats['losses'] += 1
                         stats['loss_steps'].append(steps)
+                        stats['engine1_scores'].append(0.0)
                         print(f"Game {i+1} Result: Opponent (Black) Wins ({steps} moves)")
                 else: # White Wins (-1)
                     stats['game_white_wins'] += 1
@@ -337,10 +332,12 @@ def play_match(
                         stats['wins'] += 1
                         stats['win_steps'].append(steps)
                         stats['white_wins'] += 1
+                        stats['engine1_scores'].append(1.0)
                         print(f"Game {i+1} Result: Current Model (White) Wins ({steps} moves)")
                     else:
                         stats['losses'] += 1
                         stats['loss_steps'].append(steps)
+                        stats['engine1_scores'].append(0.0)
                         print(f"Game {i+1} Result: Opponent (White) Wins ({steps} moves)")
                 
                 # --- Post-Game Data Collection ---
@@ -375,12 +372,23 @@ def main():
     parser.add_argument('--incumbent-pair-heads', type=str, default=None)
     parser.add_argument('--save_data', action='store_true', help='Save evaluation games for training')
     parser.add_argument('--games', type=int, default=config.EVAL_GAMES, help='Number of games to play per opponent')
+    parser.add_argument(
+        '--benchmark-games',
+        type=int,
+        default=config.EVAL_BENCHMARK_GAMES,
+        help='非 incumbent 基准的对局数',
+    )
     parser.add_argument('--simulations', type=int, default=config.EVAL_SIMULATIONS)
     parser.add_argument('--simulations-black', type=int, default=None)
     parser.add_argument('--simulations-white', type=int, default=None)
     parser.add_argument('--seed', type=int, default=config.EVAL_SEED)
     parser.add_argument('--opening_stones', type=int, default=config.EVAL_OPENING_STONES)
+    parser.add_argument('--output', type=str, default=None, help='评估 JSON 输出路径')
     args = parser.parse_args()
+    if args.games <= 0 or args.games % 2:
+        parser.error('--games 必须是正偶数，以便每个开局完整换色')
+    if args.benchmark_games <= 0 or args.benchmark_games % 2:
+        parser.error('--benchmark-games 必须是正偶数')
     
     # Opponents - 使用本地 checkpoints 目录，避免硬编码路径
     # 三元组：(路径、显示名、是否已经是 TensorRT 引擎)。门控始终先
@@ -419,9 +427,12 @@ def main():
         print("      等到有更多 generation 模型后会自动开始评估")
         print("=" * 50)
         # 写入空结果以便 run_loop 不会出错
-        json_path = os.path.join(config.LOG_DIR, 'eval_results.json')
-        with open(json_path, 'w') as f:
+        json_path = args.output or os.path.join(config.LOG_DIR, 'eval_results.json')
+        os.makedirs(os.path.dirname(os.path.abspath(json_path)), exist_ok=True)
+        temp_json = f"{json_path}.tmp"
+        with open(temp_json, 'w') as f:
             json.dump({}, f)
+        os.replace(temp_json, json_path)
         return
         
     # Initialize Results Container
@@ -439,10 +450,11 @@ def main():
             convert_to_engine(opponent_path, engine_path, args.gpu)
         
         print(f"\n>>> Evaluating against {name}...")
+        match_games = args.games if name == 'incumbent' else args.benchmark_games
         stats, data_lines = play_match(
             args.current_engine,
             engine_path,
-            games=args.games,
+            games=match_games,
             simulations=args.simulations,
             gpu_id=int(args.gpu),
             seed=args.seed,
@@ -467,6 +479,7 @@ def main():
             continue
             
         results_summary[name] = {
+            'games': total,
             'wins': wins,
             'losses': losses,
             'draws': draws,
@@ -478,7 +491,10 @@ def main():
             'avg_loss_steps': np.mean(stats['loss_steps']) if stats['loss_steps'] else 0,
             'avg_game_steps': np.mean(stats['win_steps'] + stats['loss_steps'] + stats['draw_steps']) if (stats['win_steps'] + stats['loss_steps'] + stats['draw_steps']) else 0,
             'black_win_rate': stats['black_wins'] / stats['black_games'] if stats['black_games'] > 0 else 0,
-            'white_win_rate': stats['white_wins'] / stats['white_games'] if stats['white_games'] > 0 else 0
+            'white_win_rate': stats['white_wins'] / stats['white_games'] if stats['white_games'] > 0 else 0,
+            'game_black_win_rate': stats['game_black_wins'] / total,
+            'game_white_win_rate': stats['game_white_wins'] / total,
+            **paired_score_statistics(stats['engine1_scores']),
         }
         
         print(f"Vs {name}: Win Rate {results_summary[name]['win_rate']:.2%}")
@@ -495,9 +511,12 @@ def main():
         print(f"Saved {len(all_data_lines)} evaluation games to {save_csv}")
 
     # Save Results
-    json_path = os.path.join(config.LOG_DIR, 'eval_results.json')
-    with open(json_path, 'w') as f:
+    json_path = args.output or os.path.join(config.LOG_DIR, 'eval_results.json')
+    os.makedirs(os.path.dirname(os.path.abspath(json_path)), exist_ok=True)
+    temp_json = f"{json_path}.tmp"
+    with open(temp_json, 'w') as f:
         json.dump(results_summary, f, indent=4)
+    os.replace(temp_json, json_path)
         
     # Generate Chart
     chart_path = os.path.join(config.LOG_DIR, 'eval_chart.png')

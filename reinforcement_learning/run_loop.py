@@ -1,5 +1,6 @@
 import argparse
 import glob
+import hashlib
 import json
 import os
 import shutil
@@ -11,9 +12,11 @@ import time
 import swanlab
 
 import config
+from gating import gate_passes
 
 
 PYTHON = sys.executable
+PHASE_SEQUENCE = ('selfplay', 'buffer', 'training', 'engine', 'evaluation')
 
 
 def signal_handler(sig, frame):
@@ -64,6 +67,49 @@ def count_csv_rows(path):
         return 0
     with open(path, 'r', encoding='utf-8', errors='replace') as f:
         return max(0, sum(1 for _ in f) - 1)
+
+
+def validate_resume_phase(phase):
+    """Validate a persisted phase; its value is the next phase to execute."""
+
+    if phase not in PHASE_SEQUENCE:
+        raise RuntimeError(
+            f"未知训练阶段 {phase!r}；允许值为 {', '.join(PHASE_SEQUENCE)}"
+        )
+    return phase
+
+
+def should_run_phase(resume_phase, phase):
+    resume_phase = validate_resume_phase(resume_phase)
+    validate_resume_phase(phase)
+    return PHASE_SEQUENCE.index(phase) >= PHASE_SEQUENCE.index(resume_phase)
+
+
+def reconcile_resume_phase(state_phase, completed_phase):
+    """Close the crash window between durable artifacts and the next state write."""
+
+    state_phase = validate_resume_phase(state_phase)
+    if completed_phase not in PHASE_SEQUENCE or completed_phase == 'evaluation':
+        return state_phase
+    next_phase = PHASE_SEQUENCE[PHASE_SEQUENCE.index(completed_phase) + 1]
+    if PHASE_SEQUENCE.index(next_phase) > PHASE_SEQUENCE.index(state_phase):
+        return next_phase
+    return state_phase
+
+
+def require_files(paths, label):
+    missing = [path for path in paths if not os.path.isfile(path)]
+    if missing:
+        raise RuntimeError(f"恢复 {label} 阶段缺少文件: {', '.join(missing)}")
+
+
+def require_minimum_games(path, expected, label):
+    actual = count_csv_rows(path)
+    if actual < expected:
+        raise RuntimeError(
+            f"恢复 {label} 阶段所需棋谱不完整: {path} 为 {actual}/{expected} 局"
+        )
+    return actual
 
 
 def manage_buffer(new_data_path):
@@ -361,6 +407,7 @@ def initialize_swanlab(generation, current_epochs, accepted_generation, mode=Non
             'simulations_black': config.SIMULATIONS_BLACK,
             'simulations_white': config.SIMULATIONS_WHITE,
             'eval_games': config.EVAL_GAMES,
+            'eval_benchmark_games': config.EVAL_BENCHMARK_GAMES,
             'eval_simulations': config.EVAL_SIMULATIONS,
         },
     }
@@ -420,28 +467,148 @@ def build_engine_from_checkpoint(checkpoint_path, engine_path, gpu_id, tag):
             os.remove(onnx_path)
 
 
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def active_bundle_path():
+    return os.path.join(config.CHECKPOINT_DIR, 'incumbent.json')
+
+
+def _bundle_file(record, key):
+    relative = record.get(key)
+    if not isinstance(relative, str) or not relative:
+        raise RuntimeError(f"incumbent manifest 缺少 {key}")
+    path = os.path.abspath(os.path.join(config.CHECKPOINT_DIR, relative))
+    root = os.path.abspath(config.CHECKPOINT_DIR)
+    if os.path.commonpath((root, path)) != root:
+        raise RuntimeError(f"incumbent manifest 路径越界: {relative}")
+    return path
+
+
+def validate_bundle(record):
+    """Validate both immutable artifacts before exposing either one to callers."""
+
+    if not isinstance(record, dict) or int(record.get('version', 0)) != 1:
+        raise RuntimeError('incumbent manifest 格式无效')
+    model_path = _bundle_file(record, 'model')
+    engine_path = _bundle_file(record, 'engine')
+    require_files((model_path, engine_path), 'incumbent')
+    if file_sha256(model_path) != record.get('model_sha256'):
+        raise RuntimeError(f'incumbent 权重哈希不匹配: {model_path}')
+    if file_sha256(engine_path) != record.get('engine_sha256'):
+        raise RuntimeError(f'incumbent 引擎哈希不匹配: {engine_path}')
+    return model_path, engine_path
+
+
+def load_active_bundle():
+    path = active_bundle_path()
+    if not os.path.exists(path):
+        return None
+    record = load_json(path, None)
+    model_path, engine_path = validate_bundle(record)
+    config.CURRENT_MODEL_PTH = model_path
+    config.CURRENT_ENGINE_PATH = engine_path
+    return record
+
+
+def create_incumbent_bundle(model_source, engine_source, generation, train_gpu):
+    """Create an immutable model/engine bundle, then atomically switch its manifest."""
+
+    require_files((model_source,), 'incumbent promotion')
+    model_hash = file_sha256(model_source)
+    if engine_source is None:
+        engine_identity = hashlib.sha256(
+            json.dumps({
+                'trt_precision': config.TRT_PRECISION,
+                'custom_attention': bool(config.TRT_CUSTOM_ATTENTION),
+            }, sort_keys=True).encode('utf-8')
+        ).hexdigest()
+    else:
+        require_files((engine_source,), 'incumbent promotion')
+        engine_identity = file_sha256(engine_source)
+    label = f"gen_{generation:06d}" if generation >= 0 else 'bootstrap'
+    bundle_name = f"{label}_{model_hash[:12]}_{engine_identity[:12]}"
+    bundles_dir = os.path.join(config.CHECKPOINT_DIR, 'incumbents')
+    bundle_dir = os.path.join(bundles_dir, bundle_name)
+    staging_dir = f"{bundle_dir}.tmp-{os.getpid()}"
+    model_path = os.path.join(bundle_dir, 'model.pth')
+    engine_path = os.path.join(bundle_dir, 'model.engine')
+    bundle_manifest_path = os.path.join(bundle_dir, 'manifest.json')
+
+    os.makedirs(bundles_dir, exist_ok=True)
+    if os.path.exists(staging_dir):
+        shutil.rmtree(staging_dir)
+    if not os.path.exists(bundle_dir):
+        os.makedirs(staging_dir)
+        staged_model = os.path.join(staging_dir, 'model.pth')
+        staged_engine = os.path.join(staging_dir, 'model.engine')
+        atomic_copy(model_source, staged_model)
+        if engine_source is None:
+            build_engine_from_checkpoint(
+                staged_model,
+                staged_engine,
+                train_gpu,
+                f'{bundle_name}_{os.getpid()}',
+            )
+        else:
+            atomic_copy(engine_source, staged_engine)
+        record = {
+            'version': 1,
+            'generation': generation,
+            'model': os.path.relpath(model_path, config.CHECKPOINT_DIR),
+            'engine': os.path.relpath(engine_path, config.CHECKPOINT_DIR),
+            'model_sha256': file_sha256(staged_model),
+            'engine_sha256': file_sha256(staged_engine),
+            'build': {
+                'trt_precision': config.TRT_PRECISION,
+                'custom_attention': bool(config.TRT_CUSTOM_ATTENTION),
+            },
+            'created_at': time.time(),
+        }
+        atomic_json_dump(record, os.path.join(staging_dir, 'manifest.json'))
+        os.replace(staging_dir, bundle_dir)
+    record = load_json(bundle_manifest_path, None)
+    validate_bundle(record)
+
+    # This is the only authoritative switch. A crash before it keeps the old
+    # bundle; a crash after it exposes both new immutable artifacts together.
+    atomic_json_dump(record, active_bundle_path())
+    config.CURRENT_MODEL_PTH = model_path
+    config.CURRENT_ENGINE_PATH = engine_path
+
+    # Keep legacy entry points useful for ad-hoc scripts. They are aliases only;
+    # startup always resolves and verifies incumbent.json first.
+    for source, destination in (
+        (model_path, os.path.join(config.CHECKPOINT_DIR, 'best.pth')),
+        (engine_path, os.path.join(config.CHECKPOINT_DIR, 'current_model.engine')),
+    ):
+        try:
+            atomic_copy(source, destination)
+        except OSError as error:
+            print(f"兼容别名更新失败（不影响 active bundle）: {error}")
+    return record
+
+
 def ensure_initial_assets(train_gpu):
-    """确保 incumbent 的 PyTorch 权重和 TensorRT 引擎同时存在。"""
-    if not os.path.exists(config.CURRENT_MODEL_PTH):
-        if not os.path.exists(config.INITIAL_MODEL_PTH):
-            raise FileNotFoundError(f"找不到初始权重: {config.INITIAL_MODEL_PTH}")
-        atomic_copy(config.INITIAL_MODEL_PTH, config.CURRENT_MODEL_PTH)
-        print(f"初始化 best.pth: {config.INITIAL_MODEL_PTH}")
+    """Resolve a verified incumbent bundle, migrating legacy assets once."""
 
-    if os.path.exists(config.CURRENT_ENGINE_PATH):
-        return
-    if os.path.exists(config.INITIAL_MODEL_PATH):
-        atomic_copy(config.INITIAL_MODEL_PATH, config.CURRENT_ENGINE_PATH)
-        return
+    active = load_active_bundle()
+    if active is not None:
+        return active
 
-    print("首次运行：从 best.pth 构建 TensorRT 引擎")
-    build_engine_from_checkpoint(
-        config.CURRENT_MODEL_PTH,
-        config.CURRENT_ENGINE_PATH,
-        train_gpu,
-        'initial',
-    )
-    atomic_copy(config.CURRENT_ENGINE_PATH, config.INITIAL_MODEL_PATH)
+    legacy_model = os.path.join(config.CHECKPOINT_DIR, 'best.pth')
+    model_source = legacy_model if os.path.exists(legacy_model) else config.INITIAL_MODEL_PTH
+    if not os.path.exists(model_source):
+        raise FileNotFoundError(f"找不到初始权重: {model_source}")
+    print('首次运行：创建带哈希校验的 incumbent bundle')
+    # Legacy engine files have no model hash, so they cannot prove compatibility.
+    # Rebuilding once is the safe migration path.
+    return create_incumbent_bundle(model_source, None, -1, train_gpu)
 
 
 def prepare_opponent_engine(generation, train_gpu):
@@ -473,7 +640,14 @@ def flatten_eval_results(results):
 
 
 def run_training_loop(max_generations=None, swanlab_mode=None):
+    """Run the resumable production loop without repeating completed phases."""
+
     config.ensure_dirs()
+    if config.EVAL_GAMES % 2 or config.EVAL_GAMES < 2 * config.GATING_MIN_PAIRS:
+        raise ValueError(
+            'EVAL_GAMES 必须是偶数，且不少于 GATING_MIN_PAIRS 的两倍'
+        )
+
     state_path = os.path.join(config.LOG_DIR, 'loop_state.json')
     history_path = os.path.join(config.LOG_DIR, 'eval_history.json')
     if not os.path.exists(history_path):
@@ -486,17 +660,16 @@ def run_training_loop(max_generations=None, swanlab_mode=None):
     generation = int(state['generation'])
     current_epochs = int(state.get('current_epochs', config.TRAIN_EPOCHS))
     accepted_generation = state.get('accepted_generation')
+    resume_phase = validate_resume_phase(state.get('phase', 'selfplay'))
     selfplay_runtime = selfplay_runtime_config()
 
     print(
-        f"自对弈: {selfplay_runtime['backend']} "
-        f"{selfplay_runtime['host']} GPU {selfplay_runtime['gpus']} | "
-        f"worker={selfplay_runtime['workers']} × "
-        f"{selfplay_runtime['mcts_threads']}线程 | "
-        f"训练 GPU: {training_gpus} | "
+        f"自对弈: {selfplay_runtime['backend']} {selfplay_runtime['host']} "
+        f"GPU {selfplay_runtime['gpus']} | worker={selfplay_runtime['workers']} × "
+        f"{selfplay_runtime['mcts_threads']}线程 | 训练 GPU: {training_gpus} | "
         f"构建/评估 GPU: {train_gpu} | 精度: {config.TRAIN_PRECISION}"
     )
-    print(f"从第 {generation} 代、阶段 {state.get('phase', 'selfplay')} 继续")
+    print(f"从第 {generation} 代、阶段 {resume_phase} 继续")
 
     swan_active = False
     completed_generations = 0
@@ -510,224 +683,316 @@ def run_training_loop(max_generations=None, swanlab_mode=None):
                 accepted_generation,
                 swanlab_mode,
             )
-            generation_started_at = time.perf_counter()
-            phase_times = {}
             print(f"\n{'=' * 20} Generation {generation} {'=' * 20}\n")
 
-            # 1. 自我对弈：只补齐缺少的局数，支持部分文件断点恢复。
-            save_loop_state(state_path, generation, 'selfplay', current_epochs, accepted_generation)
-            phase_started_at = time.perf_counter()
-            generation_data = os.path.join(config.RAW_DATA_DIR, f'gen_{generation}.csv')
-            existing_games = count_csv_rows(generation_data)
-            remaining_games = max(0, config.GAMES_PER_LOOP - existing_games)
-            if remaining_games:
-                generation_seed = config.SEED + generation * 100000
-                if config.SELFPLAY_BACKEND == 'remote':
-                    if config.ASYMMETRIC_SELFPLAY_RATIO > 0:
-                        raise ValueError('远端执行器当前只支持纯自对弈，请关闭陪练混合比例')
-                    remote_script = os.path.join(
-                        config.BASE_DIR,
-                        'pipeline',
-                        'remote_generate.py',
-                    )
-                    run_command([
-                        PYTHON,
-                        remote_script,
-                        '--generation', str(generation),
-                        '--out', generation_data,
-                        '--target-total', str(config.GAMES_PER_LOOP),
-                        '--weight', config.CURRENT_MODEL_PTH,
-                        '--seed', str(generation_seed),
-                    ])
-                else:
-                    generate_script = os.path.join(config.BASE_DIR, 'pipeline', 'generate.py')
-                    command = [
-                        PYTHON,
-                        generate_script,
-                        '--out', generation_data,
-                        '--total', str(remaining_games),
-                        '--engine', config.CURRENT_ENGINE_PATH,
-                        '--seed', str(generation_seed),
-                    ]
-                    opponent_engine = prepare_opponent_engine(generation, train_gpu)
-                    if opponent_engine:
-                        command.extend([
-                            '--opponent', opponent_engine,
-                            '--mix_ratio', str(config.ASYMMETRIC_SELFPLAY_RATIO),
-                        ])
-                    run_command(command)
-
-            generated_games = count_csv_rows(generation_data)
-            if generated_games < config.GAMES_PER_LOOP:
-                raise RuntimeError(
-                    f"第 {generation} 代只生成 {generated_games}/{config.GAMES_PER_LOOP} 局"
+            progress_path = os.path.join(config.LOG_DIR, f'gen_{generation}_progress.json')
+            progress = load_json(progress_path, {})
+            if not isinstance(progress, dict) or progress.get('generation') != generation:
+                progress = {'version': 1, 'generation': generation}
+            reconciled_phase = reconcile_resume_phase(
+                resume_phase,
+                progress.get('completed_phase'),
+            )
+            if reconciled_phase != resume_phase:
+                print(
+                    f"progress 已确认 {progress['completed_phase']} 完成，"
+                    f"从 {reconciled_phase} 继续"
                 )
-            newly_generated_games = max(0, generated_games - existing_games)
-            phase_times['selfplay_seconds'] = time.perf_counter() - phase_started_at
-            selfplay_games_per_second = (
-                newly_generated_games / max(phase_times['selfplay_seconds'], 1e-9)
-            )
-            print(
-                f"自对弈完成：累计 {generated_games} 局，本次新增 {newly_generated_games} 局，"
-                f"耗时 {phase_times['selfplay_seconds']:.1f}s，"
-                f"速度 {selfplay_games_per_second:.3f} 局/s"
-            )
+                resume_phase = reconciled_phase
+            phase_times = progress.get('phase_times', {})
+            if not isinstance(phase_times, dict):
+                phase_times = {}
 
-            # 2. 合并回放池并记录数据分布。
-            save_loop_state(state_path, generation, 'buffer', current_epochs, accepted_generation)
-            phase_started_at = time.perf_counter()
-            buffer_result = manage_buffer(generation_data)
+            def persist_progress(**values):
+                progress.update(values)
+                progress['phase_times'] = dict(phase_times)
+                atomic_json_dump(progress, progress_path)
+
+            generation_data = os.path.join(config.RAW_DATA_DIR, f'gen_{generation}.csv')
             buffer_path = os.path.join(config.BUFFER_DIR, 'replay_buffer.csv')
-            generation_stats = analyze_generation_data(generation_data, generation)
-            phase_times['buffer_seconds'] = time.perf_counter() - phase_started_at
+            candidate_pth = os.path.join(
+                config.CHECKPOINT_DIR,
+                f'candidate_gen_{generation}.pth',
+            )
+            candidate_archive = os.path.join(
+                config.CHECKPOINT_DIR,
+                f'model_gen_{generation}.pth',
+            )
+            candidate_engine = os.path.join(
+                config.CHECKPOINT_DIR,
+                f'model_gen_{generation}.engine',
+            )
+            results_path = os.path.join(config.LOG_DIR, f'eval_gen_{generation}.json')
 
+            # Self-play
+            if should_run_phase(resume_phase, 'selfplay'):
+                save_loop_state(
+                    state_path,
+                    generation,
+                    'selfplay',
+                    current_epochs,
+                    accepted_generation,
+                )
+                started = time.perf_counter()
+                existing_games = count_csv_rows(generation_data)
+                remaining_games = max(0, config.GAMES_PER_LOOP - existing_games)
+                if remaining_games:
+                    generation_seed = config.SEED + generation * 100000
+                    if config.SELFPLAY_BACKEND == 'remote':
+                        if config.ASYMMETRIC_SELFPLAY_RATIO > 0:
+                            raise ValueError(
+                                '远端执行器当前只支持纯自对弈，请关闭陪练混合比例'
+                            )
+                        run_command([
+                            PYTHON,
+                            os.path.join(config.BASE_DIR, 'pipeline', 'remote_generate.py'),
+                            '--generation', str(generation),
+                            '--out', generation_data,
+                            '--target-total', str(config.GAMES_PER_LOOP),
+                            '--weight', config.CURRENT_MODEL_PTH,
+                            '--seed', str(generation_seed),
+                        ])
+                    else:
+                        command = [
+                            PYTHON,
+                            os.path.join(config.BASE_DIR, 'pipeline', 'generate.py'),
+                            '--out', generation_data,
+                            '--total', str(remaining_games),
+                            '--engine', config.CURRENT_ENGINE_PATH,
+                            '--seed', str(generation_seed),
+                        ]
+                        opponent_engine = prepare_opponent_engine(generation, train_gpu)
+                        if opponent_engine:
+                            command.extend([
+                                '--opponent', opponent_engine,
+                                '--mix_ratio', str(config.ASYMMETRIC_SELFPLAY_RATIO),
+                            ])
+                        run_command(command)
+                generated_games = require_minimum_games(
+                    generation_data,
+                    config.GAMES_PER_LOOP,
+                    'buffer',
+                )
+                new_games = max(0, generated_games - existing_games)
+                phase_times['selfplay_seconds'] = time.perf_counter() - started
+                selfplay_speed = new_games / max(phase_times['selfplay_seconds'], 1e-9)
+                persist_progress(
+                    completed_phase='selfplay',
+                    selfplay_games_per_second=selfplay_speed,
+                )
+                save_loop_state(
+                    state_path,
+                    generation,
+                    'buffer',
+                    current_epochs,
+                    accepted_generation,
+                )
+            else:
+                generated_games = require_minimum_games(
+                    generation_data,
+                    config.GAMES_PER_LOOP,
+                    resume_phase,
+                )
+                new_games = 0
+                selfplay_speed = float(progress.get('selfplay_games_per_second', 0.0))
+
+            # Replay buffer
+            if should_run_phase(resume_phase, 'buffer'):
+                save_loop_state(
+                    state_path,
+                    generation,
+                    'buffer',
+                    current_epochs,
+                    accepted_generation,
+                )
+                started = time.perf_counter()
+                buffer_result = manage_buffer(generation_data)
+                phase_times['buffer_seconds'] = time.perf_counter() - started
+                persist_progress(completed_phase='buffer', buffer_result=buffer_result)
+                save_loop_state(
+                    state_path,
+                    generation,
+                    'training',
+                    current_epochs,
+                    accepted_generation,
+                )
+            else:
+                require_files((buffer_path,), resume_phase)
+                buffer_result = progress.get('buffer_result', {})
+                if not isinstance(buffer_result, dict):
+                    buffer_result = {}
+                buffer_result = {
+                    'size': int(buffer_result.get('size', count_csv_rows(buffer_path))),
+                    'added': int(buffer_result.get('added', 0)),
+                    'duplicates': int(buffer_result.get('duplicates', 0)),
+                }
+
+            generation_stats = analyze_generation_data(generation_data, generation)
             data_log = {
                 'generation': generation,
-                # SwanLab 标量不接受字符串；1 表示 SSH 远端执行器，0 表示
-                # 当前训练主机本地生成。H20 整机部署属于后者。
                 'system/selfplay_remote': int(selfplay_runtime['backend'] == 'remote'),
                 'data/buffer_size': buffer_result['size'],
                 'data/new_unique_games': buffer_result['added'],
                 'data/duplicate_games': buffer_result['duplicates'],
-                'data/selfplay_games_generated': newly_generated_games,
-                'performance/selfplay_games_per_second': selfplay_games_per_second,
-                'timing/selfplay_seconds': phase_times['selfplay_seconds'],
-                'timing/buffer_seconds': phase_times['buffer_seconds'],
+                'data/selfplay_games_generated': new_games,
+                'performance/selfplay_games_per_second': selfplay_speed,
+                **{f'timing/{key}': value for key, value in phase_times.items()},
             }
             for key in ('black_win_rate', 'white_win_rate', 'avg_game_length', 'opening_diversity'):
                 if key in generation_stats:
                     data_log[f'data/generation/{key}'] = generation_stats[key]
-            if generation_stats.get('chart_path'):
-                data_log['data/generation_chart'] = swanlab.Image(generation_stats['chart_path'])
+            if swan_active and generation_stats.get('chart_path'):
+                data_log['data/generation_chart'] = swanlab.Image(
+                    generation_stats['chart_path']
+                )
             swanlab_log(swan_active, data_log, step=0)
 
             if buffer_result['size'] < config.HOT_START_MIN_BUFFER:
                 print(
                     f"回放池 {buffer_result['size']} < {config.HOT_START_MIN_BUFFER}，"
-                    "本代只积累数据，不训练"
+                    '本代只积累数据，不训练'
                 )
-                total_seconds = time.perf_counter() - generation_started_at
-                phase_times['total_seconds'] = total_seconds
+                phase_times['total_seconds'] = sum(
+                    float(value) for value in phase_times.values()
+                )
                 save_generation_summary(generation, {
                     'version': 1,
                     'generation': generation,
-                    'selfplay_backend': selfplay_runtime['backend'],
+                    'resumed_from_phase': resume_phase,
                     'trained': False,
                     'accepted': None,
                     'accepted_generation': accepted_generation,
                     'buffer_size': buffer_result['size'],
-                    'current_epochs': current_epochs,
-                    'selfplay_games_per_second': selfplay_games_per_second,
-                    'generation_stats': {
-                        key: generation_stats[key]
-                        for key in (
-                            'black_win_rate',
-                            'white_win_rate',
-                            'avg_game_length',
-                            'opening_diversity',
-                        )
-                        if key in generation_stats
-                    },
                     'phase_times': phase_times,
                 })
                 finish_swanlab(swan_active, 'success')
                 swan_active = False
                 generation += 1
                 completed_generations += 1
-                save_loop_state(state_path, generation, 'selfplay', current_epochs, accepted_generation)
+                resume_phase = 'selfplay'
+                save_loop_state(
+                    state_path,
+                    generation,
+                    resume_phase,
+                    current_epochs,
+                    accepted_generation,
+                )
                 continue
 
-            # 3. 从已通过门控的 best.pth 训练独立候选模型。
-            save_loop_state(state_path, generation, 'training', current_epochs, accepted_generation)
-            phase_started_at = time.perf_counter()
-            candidate_pth = os.path.join(config.CHECKPOINT_DIR, f'candidate_gen_{generation}.pth')
-            train_script = os.path.join(config.BASE_DIR, 'pipeline', 'train.py')
-            run_command(
-                [
-                    PYTHON,
-                    train_script,
-                    '--resume', config.CURRENT_MODEL_PTH,
-                    '--data', buffer_path,
-                    '--run_name', f'gen_{generation}',
-                    '--epochs', str(current_epochs),
-                    '--generation', str(generation),
-                    '--precision', config.TRAIN_PRECISION,
-                    '--output', candidate_pth,
-                ],
-                env_vars={'CUDA_VISIBLE_DEVICES': training_gpus},
-            )
-            if not os.path.exists(candidate_pth):
-                raise RuntimeError(f"候选权重未生成: {candidate_pth}")
-            phase_times['training_seconds'] = time.perf_counter() - phase_started_at
+            # Training
+            if should_run_phase(resume_phase, 'training'):
+                save_loop_state(
+                    state_path,
+                    generation,
+                    'training',
+                    current_epochs,
+                    accepted_generation,
+                )
+                started = time.perf_counter()
+                run_command(
+                    [
+                        PYTHON,
+                        os.path.join(config.BASE_DIR, 'pipeline', 'train.py'),
+                        '--resume', config.CURRENT_MODEL_PTH,
+                        '--data', buffer_path,
+                        '--run_name', f'gen_{generation}',
+                        '--epochs', str(current_epochs),
+                        '--generation', str(generation),
+                        '--precision', config.TRAIN_PRECISION,
+                        '--output', candidate_pth,
+                    ],
+                    env_vars={'CUDA_VISIBLE_DEVICES': training_gpus},
+                )
+                require_files((candidate_pth,), 'engine')
+                atomic_copy(candidate_pth, candidate_archive)
+                phase_times['training_seconds'] = time.perf_counter() - started
+                train_metrics = load_json(
+                    os.path.join(config.LOG_DIR, 'train_metrics.json'),
+                    {},
+                )
+                persist_progress(
+                    completed_phase='training',
+                    train_metrics=train_metrics,
+                )
+                save_loop_state(
+                    state_path,
+                    generation,
+                    'engine',
+                    current_epochs,
+                    accepted_generation,
+                )
+            else:
+                require_files((candidate_pth, candidate_archive), resume_phase)
+                train_metrics = progress.get('train_metrics', {})
+                if not isinstance(train_metrics, dict):
+                    train_metrics = {}
 
-            # model_gen_X 保留全部候选，accepted_gen_X 只保留门控通过的版本。
-            candidate_archive = os.path.join(config.CHECKPOINT_DIR, f'model_gen_{generation}.pth')
-            atomic_copy(candidate_pth, candidate_archive)
-            train_metrics_path = os.path.join(config.LOG_DIR, 'train_metrics.json')
-            train_metrics = load_json(train_metrics_path, {})
             epoch_metrics = train_metrics.get('epoch_metrics', [])
             if not isinstance(epoch_metrics, list):
                 epoch_metrics = []
             training_log_steps = max(1, len(epoch_metrics))
-            if epoch_metrics:
-                for epoch_index, epoch_metric in enumerate(epoch_metrics, start=1):
-                    train_log = {
+            if should_run_phase(resume_phase, 'training'):
+                for index, metrics in enumerate(epoch_metrics or [train_metrics], start=1):
+                    swanlab_log(swan_active, {
                         'generation': generation,
-                        'train/epoch': epoch_metric.get('epoch', epoch_index),
-                        'train/loss': epoch_metric.get('loss', 0),
-                        'train/policy_loss': epoch_metric.get('policy_loss', 0),
-                        'train/value_loss': epoch_metric.get('value_loss', 0),
-                        'train/accuracy_top1': epoch_metric.get('accuracy_top1', 0),
-                        'train/accuracy_top5': epoch_metric.get('accuracy_top5', 0),
-                        'train/policy_entropy': epoch_metric.get('policy_entropy', 0),
-                        'train/value_mae': epoch_metric.get('value_mae', 0),
-                        'train/lr': epoch_metric.get('lr', 0),
-                        'train/samples_per_second': epoch_metric.get('samples_per_second', 0),
-                    }
-                    if epoch_index == len(epoch_metrics):
-                        train_log.update({
-                            'train/overall_samples_per_second': train_metrics.get(
-                                'overall_samples_per_second', 0
-                            ),
-                            'timing/training_seconds': phase_times['training_seconds'],
-                        })
-                    swanlab_log(swan_active, train_log, step=epoch_index)
+                        'train/epoch': metrics.get('epoch', index),
+                        'train/loss': metrics.get('loss', 0),
+                        'train/policy_loss': metrics.get('policy_loss', 0),
+                        'train/value_loss': metrics.get('value_loss', 0),
+                        'train/accuracy_top1': metrics.get('accuracy_top1', 0),
+                        'train/accuracy_top5': metrics.get('accuracy_top5', 0),
+                        'train/policy_entropy': metrics.get('policy_entropy', 0),
+                        'train/samples_per_second': metrics.get(
+                            'samples_per_second',
+                            train_metrics.get('overall_samples_per_second', 0),
+                        ),
+                    }, step=index)
+
+            # TensorRT build
+            if should_run_phase(resume_phase, 'engine'):
+                save_loop_state(
+                    state_path,
+                    generation,
+                    'engine',
+                    current_epochs,
+                    accepted_generation,
+                )
+                started = time.perf_counter()
+                build_engine_from_checkpoint(
+                    candidate_pth,
+                    candidate_engine,
+                    train_gpu,
+                    f'candidate_{generation}',
+                )
+                phase_times['engine_seconds'] = time.perf_counter() - started
+                persist_progress(completed_phase='engine')
+                save_loop_state(
+                    state_path,
+                    generation,
+                    'evaluation',
+                    current_epochs,
+                    accepted_generation,
+                )
             else:
-                train_log = {
-                    'generation': generation,
-                    'train/loss': train_metrics.get('loss', 0),
-                    'train/policy_loss': train_metrics.get('policy_loss', 0),
-                    'train/value_loss': train_metrics.get('value_loss', 0),
-                    'train/accuracy_top1': train_metrics.get('accuracy_top1', 0),
-                    'train/accuracy_top5': train_metrics.get('accuracy_top5', 0),
-                    'train/policy_entropy': train_metrics.get('policy_entropy', 0),
-                    'train/samples_per_second': train_metrics.get(
-                        'overall_samples_per_second', 0
-                    ),
-                    'timing/training_seconds': phase_times['training_seconds'],
-                }
-                swanlab_log(swan_active, train_log, step=1)
+                require_files((candidate_engine,), resume_phase)
 
-            # 4. 候选模型导出并编译 TensorRT 引擎。
-            save_loop_state(state_path, generation, 'engine', current_epochs, accepted_generation)
-            phase_started_at = time.perf_counter()
-            candidate_engine = os.path.join(config.CHECKPOINT_DIR, f'model_gen_{generation}.engine')
-            build_engine_from_checkpoint(
-                candidate_pth,
-                candidate_engine,
-                train_gpu,
-                f'candidate_{generation}',
+            # Paired gate. A complete per-generation result is safe to reuse.
+            save_loop_state(
+                state_path,
+                generation,
+                'evaluation',
+                current_epochs,
+                accepted_generation,
             )
-            phase_times['engine_seconds'] = time.perf_counter() - phase_started_at
-
-            # 5. 与当前 incumbent 进行成对开局评估，评估异常一律不晋升。
-            save_loop_state(state_path, generation, 'evaluation', current_epochs, accepted_generation)
-            phase_started_at = time.perf_counter()
-            evaluate_script = os.path.join(config.BASE_DIR, 'pipeline', 'evaluate.py')
-            run_command(
-                [
+            results = load_json(results_path, {}) if resume_phase == 'evaluation' else {}
+            incumbent_stats = results.get('incumbent') if isinstance(results, dict) else None
+            if not isinstance(incumbent_stats, dict) or int(
+                incumbent_stats.get('games', -1)
+            ) != config.EVAL_GAMES:
+                started = time.perf_counter()
+                run_command([
                     PYTHON,
-                    evaluate_script,
+                    os.path.join(config.BASE_DIR, 'pipeline', 'evaluate.py'),
                     '--current_engine', candidate_engine,
                     '--incumbent_engine', config.CURRENT_ENGINE_PATH,
                     '--generation', str(generation),
@@ -736,35 +1001,46 @@ def run_training_loop(max_generations=None, swanlab_mode=None):
                     '--simulations', str(config.EVAL_SIMULATIONS),
                     '--seed', str(config.EVAL_SEED),
                     '--opening_stones', str(config.EVAL_OPENING_STONES),
+                    '--output', results_path,
                     '--save_data',
-                ],
-            )
-            phase_times['evaluation_seconds'] = time.perf_counter() - phase_started_at
+                ])
+                phase_times['evaluation_seconds'] = time.perf_counter() - started
+                results = load_json(results_path, {})
+                incumbent_stats = results.get('incumbent')
+            if not isinstance(incumbent_stats, dict):
+                raise RuntimeError('评估结果缺少 incumbent，对候选模型执行失败关闭')
 
-            results_path = os.path.join(config.LOG_DIR, 'eval_results.json')
-            results = load_json(results_path, {})
-            incumbent_stats = results.get('incumbent')
-            if not incumbent_stats:
-                raise RuntimeError("评估结果缺少 incumbent，对候选模型执行失败关闭")
-
-            score_rate = incumbent_stats.get('score_rate', incumbent_stats.get('win_rate', 0))
-            white_win_rate = incumbent_stats.get('white_win_rate', 0)
-            passed_gating = (
-                score_rate >= config.GATING_MIN_WIN_RATE
-                and white_win_rate >= config.GATING_MIN_WHITE_WIN_RATE
+            score_rate = float(incumbent_stats.get('score_rate', 0.0))
+            white_win_rate = float(incumbent_stats.get('white_win_rate', 0.0))
+            passed_gating = gate_passes(
+                incumbent_stats,
+                minimum_score=config.GATING_MIN_WIN_RATE,
+                minimum_confidence=config.GATING_MIN_CONFIDENCE,
+                minimum_pairs=config.GATING_MIN_PAIRS,
+                minimum_white_win_rate=config.GATING_MIN_WHITE_WIN_RATE,
+                minimum_game_black_win_rate=config.GATING_MIN_GAME_BLACK_WIN_RATE,
+                maximum_game_black_win_rate=config.GATING_MAX_GAME_BLACK_WIN_RATE,
             )
 
             if passed_gating:
-                atomic_copy(candidate_pth, config.CURRENT_MODEL_PTH)
-                atomic_copy(candidate_engine, config.CURRENT_ENGINE_PATH)
-                accepted_path = os.path.join(config.CHECKPOINT_DIR, f'accepted_gen_{generation}.pth')
+                accepted_path = os.path.join(
+                    config.CHECKPOINT_DIR,
+                    f'accepted_gen_{generation}.pth',
+                )
                 atomic_copy(candidate_pth, accepted_path)
+                create_incumbent_bundle(
+                    candidate_pth,
+                    candidate_engine,
+                    generation,
+                    train_gpu,
+                )
                 accepted_generation = generation
                 print(f">>> 门控通过：第 {generation} 代成为新的 incumbent")
             else:
                 print(
-                    f">>> 门控失败：score={score_rate:.2%}, white_win={white_win_rate:.2%}；"
-                    "保留上一版 best.pth 和 current_model.engine"
+                    f">>> 门控失败：score={score_rate:.2%}, "
+                    f"confidence={incumbent_stats.get('improvement_probability', 0):.2%}, "
+                    f"white={white_win_rate:.2%}；保留 incumbent"
                 )
 
             if score_rate < 0.4:
@@ -772,91 +1048,87 @@ def run_training_loop(max_generations=None, swanlab_mode=None):
             elif score_rate > 0.8:
                 current_epochs = max(current_epochs - 1, 1)
 
-            # 仅把已通过候选的评估棋谱加入训练池，避免弱候选污染数据。
-            evaluation_data = os.path.join(config.RAW_DATA_DIR, f'eval_data_{generation}.csv')
+            evaluation_data = os.path.join(
+                config.RAW_DATA_DIR,
+                f'eval_data_{generation}.csv',
+            )
             if passed_gating and os.path.exists(evaluation_data):
                 manage_buffer(evaluation_data)
 
+            persist_progress(
+                completed_phase='evaluation',
+                gate=incumbent_stats,
+                accepted=passed_gating,
+                next_epochs=current_epochs,
+            )
             history = load_json(history_path, [])
             history_entry = {
                 'generation': generation,
                 'incumbent_score_rate': score_rate,
+                'improvement_probability': incumbent_stats.get(
+                    'improvement_probability',
+                    0.0,
+                ),
                 'white_win_rate': white_win_rate,
                 'accepted': passed_gating,
                 'timestamp': time.time(),
             }
-            existing_index = next(
-                (index for index, entry in enumerate(history) if entry.get('generation') == generation),
-                None,
-            )
-            if existing_index is None:
-                history.append(history_entry)
-            else:
-                history[existing_index] = history_entry
+            history = [
+                entry for entry in history
+                if entry.get('generation') != generation
+            ]
+            history.append(history_entry)
             history.sort(key=lambda entry: entry['generation'])
             atomic_json_dump(history, history_path)
-            trend_path = os.path.join(config.LOG_DIR, 'eval_trend.png')
-            update_history_plot(history_path, trend_path)
+            update_history_plot(
+                history_path,
+                os.path.join(config.LOG_DIR, 'eval_trend.png'),
+            )
 
-            total_seconds = time.perf_counter() - generation_started_at
-            phase_times['total_seconds'] = total_seconds
-            eval_log = {
+            phase_times['total_seconds'] = sum(
+                float(value)
+                for key, value in phase_times.items()
+                if key != 'total_seconds'
+            )
+            swanlab_log(swan_active, {
                 'generation': generation,
                 'eval/gating_passed': int(passed_gating),
-                'eval/incumbent_score_rate': score_rate,
-                'eval/incumbent_white_win_rate': white_win_rate,
                 'train/next_epochs': current_epochs,
                 **flatten_eval_results(results),
                 **{f'timing/{key}': value for key, value in phase_times.items()},
-            }
-            chart_path = os.path.join(config.LOG_DIR, 'eval_chart.png')
-            if os.path.exists(chart_path):
-                eval_log['eval/summary_chart'] = swanlab.Image(chart_path)
-            swanlab_log(swan_active, eval_log, step=training_log_steps + 1)
-
+            }, step=training_log_steps + 1)
             save_generation_summary(generation, {
                 'version': 1,
                 'generation': generation,
+                'resumed_from_phase': resume_phase,
                 'selfplay_backend': selfplay_runtime['backend'],
                 'trained': True,
                 'accepted': passed_gating,
                 'accepted_generation': accepted_generation,
                 'buffer_size': count_csv_rows(buffer_path),
                 'current_epochs': current_epochs,
-                'selfplay_games_per_second': selfplay_games_per_second,
-                'train': {
-                    'loss': train_metrics.get('loss', 0),
-                    'policy_loss': train_metrics.get('policy_loss', 0),
-                    'value_loss': train_metrics.get('value_loss', 0),
-                    'accuracy_top1': train_metrics.get('accuracy_top1', 0),
-                    'accuracy_top5': train_metrics.get('accuracy_top5', 0),
-                    'overall_samples_per_second': train_metrics.get(
-                        'overall_samples_per_second', 0
-                    ),
-                },
-                'eval': {
-                    'incumbent_score_rate': score_rate,
-                    'incumbent_white_win_rate': white_win_rate,
-                },
-                'generation_stats': {
-                    key: generation_stats[key]
-                    for key in (
-                        'black_win_rate',
-                        'white_win_rate',
-                        'avg_game_length',
-                        'opening_diversity',
-                    )
-                    if key in generation_stats
-                },
+                'selfplay_games_per_second': selfplay_speed,
+                'train': train_metrics,
+                'eval': incumbent_stats,
+                'generation_stats': generation_stats,
                 'phase_times': phase_times,
             })
 
-            print(f"第 {generation} 代完成，总耗时 {total_seconds:.1f}s")
+            print(
+                f"第 {generation} 代完成，总耗时 {phase_times['total_seconds']:.1f}s"
+            )
             finish_swanlab(swan_active, 'success')
             swan_active = False
             generation += 1
             completed_generations += 1
-            save_loop_state(state_path, generation, 'selfplay', current_epochs, accepted_generation)
+            resume_phase = 'selfplay'
+            save_loop_state(
+                state_path,
+                generation,
+                resume_phase,
+                current_epochs,
+                accepted_generation,
+            )
 
     except KeyboardInterrupt:
         finish_state = 'aborted'

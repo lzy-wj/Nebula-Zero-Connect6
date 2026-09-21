@@ -287,6 +287,7 @@ def run_epoch(
     if teacher is not None:
         teacher.eval()
     sums = empty_metric_sums(task)
+    torch.cuda.reset_peak_memory_stats(device)
     started = time.perf_counter()
 
     for batch_index, batch in enumerate(loader, start=1):
@@ -429,6 +430,9 @@ def run_epoch(
     elapsed = time.perf_counter() - started
     metrics["seconds"] = elapsed
     metrics["samples_per_second"] = sums["count"] * world_size / max(elapsed, 1e-9)
+    metrics["rank0_peak_memory_gib"] = (
+        torch.cuda.max_memory_allocated(device) / (1024 ** 3)
+    )
     return metrics, global_step
 
 

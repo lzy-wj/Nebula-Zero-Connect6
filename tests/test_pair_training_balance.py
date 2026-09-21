@@ -5,12 +5,11 @@ import unittest
 import torch
 
 
-PAIR_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "experiments", "pair_policy")
-)
-sys.path.insert(0, PAIR_DIR)
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
-from train_joint import normalized_outcome_weights
+from experiments.pair_policy.train_joint import normalized_outcome_weights
 
 
 class PairTrainingBalanceTest(unittest.TestCase):

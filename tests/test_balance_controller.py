@@ -3,12 +3,14 @@ import sys
 import unittest
 
 
-PAIR_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "experiments", "pair_policy")
-)
-sys.path.insert(0, PAIR_DIR)
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
-from balance_controller import update_opening_ratio, white_win_weight
+from experiments.pair_policy.balance_controller import (
+    update_opening_ratio,
+    white_win_weight,
+)
 
 
 class BalanceControllerTest(unittest.TestCase):

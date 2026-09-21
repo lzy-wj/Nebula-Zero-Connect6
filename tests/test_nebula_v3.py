@@ -7,15 +7,17 @@ import torch
 
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-V3_DIR = os.path.join(ROOT, 'experiments', 'nebula_v3')
-RL_DIR = os.path.join(ROOT, 'reinforcement_learning')
-sys.path.insert(0, V3_DIR)
-sys.path.insert(0, RL_DIR)
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
-from dataset import GameRecord, SelfPlayPositionDataset, player_at_move
-from model import NebulaNetV3
-from model_fast import FastC6NetV4
-from core.model import C6TransNet
+from experiments.nebula_v3.dataset import (
+    GameRecord,
+    SelfPlayPositionDataset,
+    player_at_move,
+)
+from experiments.nebula_v3.model import NebulaNetV3
+from experiments.nebula_v3.model_fast import FastC6NetV4
+from reinforcement_learning.core.model import C6TransNet
 
 
 class NebulaV3DatasetTest(unittest.TestCase):

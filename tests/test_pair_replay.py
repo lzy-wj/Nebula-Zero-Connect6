@@ -4,12 +4,11 @@ import sys
 import unittest
 
 
-PAIR_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "experiments", "pair_policy")
-)
-sys.path.insert(0, PAIR_DIR)
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
-from build_replay import stratified_validation_split
+from experiments.pair_policy.build_replay import stratified_validation_split
 
 
 class PairReplayTest(unittest.TestCase):

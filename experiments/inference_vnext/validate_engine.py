@@ -149,8 +149,10 @@ def main():
         first_moves = expected_outputs[0].argmax(dim=1)
         batch_indices = torch.arange(len(counts), device=device)
         relative_index = wrapper.pair_heads.relative_indices(first_moves)
-        relative_bias = wrapper.pair_heads.relative_bias.float()[relative_index]
-        base_scale = wrapper.pair_heads.base_scale.float()
+        relative_bias = wrapper.pair_heads.relative_bias.detach().float()[
+            relative_index
+        ]
+        base_scale = wrapper.pair_heads.base_scale.detach().float()
 
         def conditional_policy(policy, candidate, first):
             selected_first = first.float()[batch_indices, first_moves]

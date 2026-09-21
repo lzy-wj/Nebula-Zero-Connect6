@@ -60,6 +60,24 @@ CUDA_VISIBLE_DEVICES=0,7 conda run -n connect6 torchrun \
 隔离生成的新 replay 可重复传入 `--data-root` 与历史数据合并。原始自对弈 CSV 先用
 `prepare_replay.py` 做确定性训练/验证切分，不需要复制生产 replay。
 
+```bash
+python experiments/inference_vnext/prepare_replay.py \
+  --input /path/to/selfplay.csv \
+  --output-dir /path/to/bootstrap_replay \
+  --generation 273 \
+  --validation-games 400
+
+python experiments/inference_vnext/train.py \
+  --architecture dual_scale_c320_d16 \
+  --task pair \
+  --data-root /path/to/production_replay \
+  --data-root /path/to/bootstrap_replay \
+  --init-checkpoint /path/to/pair/best.pth
+```
+
+长时间自对弈可用 `NEBULA_SELFPLAY_PROGRESS_INTERVAL` 控制日志频率，并用
+`NEBULA_SELFPLAY_CPU_AFFINITY='0-29;62-91'` 将各 worker 固定到对应 NUMA 节点。
+
 ## 导出与基准
 
 未训练结构的筛选产物统一写到 `/tmp`：

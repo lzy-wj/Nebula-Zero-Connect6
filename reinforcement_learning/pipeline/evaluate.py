@@ -175,6 +175,8 @@ def play_match(
     opening_stones=5,
     simulations_black=None,
     simulations_white=None,
+    engine1_simulations=None,
+    engine2_simulations=None,
     engine1_pair_heads=None,
     engine2_pair_heads=None,
 ):
@@ -287,15 +289,24 @@ def play_match(
                     mcts_lib.play_move(idx)
                 
             # 3. Search
+            model_simulations = (
+                engine1_simulations
+                if current_mcts is mcts1
+                else engine2_simulations
+            )
             color_simulations = (
                 simulations_black
                 if game.current_player == 1
                 else simulations_white
             )
-            if color_simulations is None:
-                color_simulations = simulations
+            if model_simulations is not None:
+                search_simulations = model_simulations
+            elif color_simulations is not None:
+                search_simulations = color_simulations
+            else:
+                search_simulations = simulations
             move = current_mcts.get_mcts_move(
-                simulations=color_simulations,
+                simulations=search_simulations,
                 temperature=0.0,
             )
             
@@ -383,6 +394,18 @@ def main():
     parser.add_argument('--simulations', type=int, default=config.EVAL_SIMULATIONS)
     parser.add_argument('--simulations-black', type=int, default=None)
     parser.add_argument('--simulations-white', type=int, default=None)
+    parser.add_argument(
+        '--current-simulations',
+        type=int,
+        default=None,
+        help='当前候选每步预算；用于等墙钟时间门禁',
+    )
+    parser.add_argument(
+        '--incumbent-simulations',
+        type=int,
+        default=None,
+        help='incumbent 每步预算；用于等墙钟时间门禁',
+    )
     parser.add_argument('--seed', type=int, default=config.EVAL_SEED)
     parser.add_argument('--opening_stones', type=int, default=config.EVAL_OPENING_STONES)
     parser.add_argument('--output', type=str, default=None, help='评估 JSON 输出路径')
@@ -391,6 +414,12 @@ def main():
         parser.error('--games 必须是正偶数，以便每个开局完整换色')
     if args.benchmark_games <= 0 or args.benchmark_games % 2:
         parser.error('--benchmark-games 必须是正偶数')
+    for name, value in (
+        ('--current-simulations', args.current_simulations),
+        ('--incumbent-simulations', args.incumbent_simulations),
+    ):
+        if value is not None and value <= 0:
+            parser.error(f'{name} 必须为正数')
     
     # Opponents - 使用本地 checkpoints 目录，避免硬编码路径
     # 三元组：(路径、显示名、是否已经是 TensorRT 引擎)。门控始终先
@@ -463,6 +492,8 @@ def main():
             opening_stones=args.opening_stones,
             simulations_black=args.simulations_black,
             simulations_white=args.simulations_white,
+            engine1_simulations=args.current_simulations,
+            engine2_simulations=args.incumbent_simulations,
             engine1_pair_heads=args.current_pair_heads,
             engine2_pair_heads=opponent_pair_heads,
         )
@@ -496,6 +527,8 @@ def main():
             'white_win_rate': stats['white_wins'] / stats['white_games'] if stats['white_games'] > 0 else 0,
             'game_black_win_rate': stats['game_black_wins'] / total,
             'game_white_win_rate': stats['game_white_wins'] / total,
+            'current_simulations': args.current_simulations or args.simulations,
+            'opponent_simulations': args.incumbent_simulations or args.simulations,
             **paired_score_statistics(stats['engine1_scores']),
         }
         

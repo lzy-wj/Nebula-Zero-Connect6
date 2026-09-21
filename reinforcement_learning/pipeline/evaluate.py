@@ -60,6 +60,8 @@ def plot_results(results, generation, save_path):
     if not opponents:
         return
 
+    os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+
     # Metrics to plot
     win_rates = [results[o]['win_rate'] for o in opponents]
     loss_rates = [results[o]['loss_rate'] for o in opponents]
@@ -518,8 +520,6 @@ def main():
         json.dump(results_summary, f, indent=4)
     os.replace(temp_json, json_path)
         
-    # Generate Chart
-    chart_path = os.path.join(config.LOG_DIR, 'eval_chart.png')
     # Generate Charts
     # 1. Full Chart (Maybe kept locally for debug, but not uploaded if user hates it)
     chart_path = os.path.join(config.LOG_DIR, 'eval_chart.png')

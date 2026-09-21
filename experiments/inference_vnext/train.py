@@ -95,6 +95,7 @@ def parse_args():
     parser.add_argument("--second-policy-weight", type=float, default=1.0)
     parser.add_argument("--conditional-value-weight", type=float, default=0.5)
     parser.add_argument("--distill-policy-weight", type=float, default=0.3)
+    parser.add_argument("--distill-value-weight", type=float, default=0.0)
     parser.add_argument("--pair-rank", type=int, default=16)
     parser.add_argument("--warmup-ratio", type=float, default=0.05)
     parser.add_argument("--min-lr-ratio", type=float, default=0.05)
@@ -257,6 +258,7 @@ def empty_metric_sums(task):
         "value_loss",
         "value_mae",
         "distill_policy_loss",
+        "distill_value_loss",
     ]
     if task == "pair":
         names.extend([
@@ -324,16 +326,30 @@ def run_epoch(
             )
             first_policy_loss = first_metrics["loss"].mean()
             distill_per_sample = torch.zeros_like(first_metrics["loss"])
-            if training and teacher is not None and args.distill_policy_weight > 0:
+            distill_value_per_sample = torch.zeros_like(value_prediction)
+            if training and teacher is not None:
                 with torch.no_grad():
-                    teacher_logits, _, _ = teacher(adapt_v2_features(features))
-                    teacher_probability = torch.softmax(
-                        teacher_logits.float().masked_fill(occupied, -10_000.0),
-                        dim=1,
+                    teacher_logits, _, teacher_value = teacher(
+                        adapt_v2_features(features)
                     )
-                distill_per_sample = -(
-                    teacher_probability * first_metrics["log_probability"]
-                ).sum(dim=1)
+                    if args.distill_policy_weight > 0:
+                        teacher_probability = torch.softmax(
+                            teacher_logits.float().masked_fill(
+                                occupied,
+                                -10_000.0,
+                            ),
+                            dim=1,
+                        )
+                        distill_per_sample = -(
+                            teacher_probability * first_metrics["log_probability"]
+                        ).sum(dim=1)
+                    if args.distill_value_weight > 0:
+                        distill_value_per_sample = F.smooth_l1_loss(
+                            value_prediction,
+                            teacher_value.float().flatten(),
+                            beta=0.5,
+                            reduction="none",
+                        )
             distill_loss = distill_per_sample.mean()
             optimized_first_loss = (
                 (1.0 - args.distill_policy_weight) * first_policy_loss
@@ -348,7 +364,17 @@ def run_epoch(
                 reduction="none",
             )
             value_loss = value_loss_per_sample.mean()
-            loss = optimized_first_loss + args.value_loss_weight * value_loss
+            distill_value_loss = distill_value_per_sample.mean()
+            optimized_value_loss = (
+                (1.0 - args.distill_value_weight) * value_loss
+                + args.distill_value_weight * distill_value_loss
+                if teacher is not None and args.distill_value_weight > 0
+                else value_loss
+            )
+            loss = (
+                optimized_first_loss
+                + args.value_loss_weight * optimized_value_loss
+            )
 
             second_metrics = None
             conditional_loss_per_sample = None
@@ -402,6 +428,9 @@ def run_epoch(
             (value_prediction - value_target.float()).detach().abs().sum()
         )
         sums["distill_policy_loss"] += float(distill_per_sample.detach().sum())
+        sums["distill_value_loss"] += float(
+            distill_value_per_sample.detach().sum()
+        )
         if task == "pair":
             sums["second_policy_loss"] += float(
                 second_metrics["loss"].detach().sum()
@@ -480,6 +509,8 @@ def main():
         raise ValueError("--resume and --init-checkpoint are mutually exclusive")
     if not 0.0 <= args.distill_policy_weight <= 1.0:
         raise ValueError("--distill-policy-weight must be in [0, 1]")
+    if not 0.0 <= args.distill_value_weight <= 1.0:
+        raise ValueError("--distill-value-weight must be in [0, 1]")
     if args.recent_generations < 0:
         raise ValueError("--recent-generations must not be negative")
     if args.maximum_stones <= 0:
@@ -562,7 +593,7 @@ def main():
     model = model.to(device, memory_format=torch.channels_last)
 
     teacher = None
-    if args.distill_policy_weight > 0:
+    if args.distill_policy_weight > 0 or args.distill_value_weight > 0:
         teacher = load_v2_teacher(args.teacher_checkpoint, device=device)
 
     if args.task == "pair":

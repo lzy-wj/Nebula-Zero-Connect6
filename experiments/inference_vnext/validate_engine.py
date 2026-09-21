@@ -1,4 +1,4 @@
-"""Compare a random-weight candidate with its exported TensorRT engine."""
+"""Compare an inference-first model with its exported TensorRT engine."""
 
 import argparse
 import json

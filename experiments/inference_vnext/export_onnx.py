@@ -1,4 +1,4 @@
-"""Export random-weight inference-first candidates for A800 TensorRT screening."""
+"""Export inference-first checkpoints or random candidates to ONNX."""
 
 import argparse
 import json
@@ -20,7 +20,7 @@ from experiments.nebula_v3.export_onnx import FusedV3SelfPlayWrapper
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Export an inference-first random-weight candidate to ONNX",
+        description="Export an inference-first checkpoint or random candidate to ONNX",
     )
     parser.add_argument("--architecture", choices=sorted(ARCHITECTURES), required=True)
     parser.add_argument("--output", required=True)

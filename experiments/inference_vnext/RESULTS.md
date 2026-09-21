@@ -57,3 +57,27 @@ NVIDIA A800-SXM4-80GB、TensorRT 11.1、FP16、最大 batch 64 下测量；输�
    7.76×/5.81×，调度器必须在第 65 子前切换到 Strong。
 3. 暂不训练 C320 与深层瓶颈版本；它们位于较差的容量—延迟曲线上。
 4. 完成教师蒸馏后，使用相同搜索分布重测 MCTS、自对弈 games/s 和固定时间棋力。
+
+## A800 infrastructure tuning
+
+对 `dual_scale_c256_d14` 重新执行 TensorRT level-5 tactic 搜索，比较辅助流上限
+0/1/2/4 与自动选择。构建阶段使用 3 次 tactic timing，基准仍包含全部 D2H 输出。
+
+| Engine | Original | Tuned | Latency reduction | Setting |
+| --- | ---: | ---: | ---: | --- |
+| Exact, batch 64 | 1.671 ms | 1.539 ms | 7.9% | aux streams 0 |
+| Pair, batch 32 | 1.562 ms | 1.325 ms | 15.2% | aux streams 1 |
+| Pair, batch 64 | 1.948 ms | 1.793 ms | 8.0% | aux streams 1 |
+
+自动辅助流即使增加到 3 次 timing，batch 64 仍为 1.679 ms；收益主要来自限制辅助流，
+不是单纯延长构建。生产 Pair 候选应使用：
+
+```bash
+NEBULA_TRT_AUX_STREAMS=1 \
+NEBULA_TRT_TIMING_ITERATIONS=3 \
+python reinforcement_learning/pipeline/build_engine.py model.onnx model.engine
+```
+
+CPU 筛选显示单卡 24–32 个 MCTS 线程最合理，48/56 线程反而下降。GPU 0–3 属于
+NUMA 0，GPU 4–7 属于 NUMA 1；多 worker 应按 GPU 分割本地 CPU 集合。跨 NUMA 对当前
+大模型只有约 0–3% 影响，但快网进入 CPU 受限区后仍应避免线程迁移和同 socket 过量超卖。

@@ -10,10 +10,12 @@ import torch.nn.functional as F
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, SCRIPT_DIR)
+PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..'))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
-from model import NebulaNetV3
-from model_fast import FastC6NetV4
+from experiments.nebula_v3.model import NebulaNetV3
+from experiments.nebula_v3.model_fast import FastC6NetV4
 
 
 class FusedV3SelfPlayWrapper(nn.Module):

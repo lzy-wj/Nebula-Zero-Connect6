@@ -14,12 +14,17 @@ import torch
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 RL_DIR = os.path.join(ROOT, "reinforcement_learning")
-sys.path.insert(0, RL_DIR)
-sys.path.insert(0, os.path.dirname(__file__))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
-from core.model import C6TransNet
-from model import PairPolicyHead, PairValueHead
-from probe import make_features, parse_move, parse_policy, player_at
+from experiments.pair_policy.model import PairPolicyHead, PairValueHead
+from experiments.pair_policy.probe import (
+    make_features,
+    parse_move,
+    parse_policy,
+    player_at,
+)
+from reinforcement_learning.core.model import C6TransNet
 
 
 def load_joint_samples(paths, limit, seed):

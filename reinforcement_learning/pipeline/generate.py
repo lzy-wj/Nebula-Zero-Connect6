@@ -34,6 +34,29 @@ def should_report_progress(completed_games):
     return completed_games == 1 or completed_games % max(1, interval) == 0
 
 
+def apply_worker_affinity(worker_id):
+    specification = os.environ.get('NEBULA_SELFPLAY_CPU_AFFINITY', '')
+    if not specification or not hasattr(os, 'sched_setaffinity'):
+        return None
+    entries = specification.split(';')
+    if worker_id >= len(entries):
+        raise ValueError('NEBULA_SELFPLAY_CPU_AFFINITY 的 CPU 集合少于 worker 数量')
+    cpus = set()
+    for part in entries[worker_id].split(','):
+        part = part.strip()
+        if not part:
+            continue
+        if '-' in part:
+            start, end = (int(value) for value in part.split('-', 1))
+            cpus.update(range(start, end + 1))
+        else:
+            cpus.add(int(part))
+    if not cpus:
+        raise ValueError(f'worker {worker_id} 的 CPU affinity 为空')
+    os.sched_setaffinity(0, cpus)
+    return sorted(cpus)
+
+
 def encode_policy(policy_array):
     """
     Compress policy array to sparse string: idx:prob;idx:prob...
@@ -80,6 +103,7 @@ def worker_process(
     counter_lock=None,
     total_games=None,
 ):
+    affinity = apply_worker_affinity(worker_id)
     os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
     device = torch.device('cuda:0')
     signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -109,6 +133,9 @@ def worker_process(
     except Exception as e:
         print(f"[Worker {worker_id}] Init Error: {e}")
         raise RuntimeError(f"Worker {worker_id} 初始化失败") from e
+
+    if affinity:
+        print(f"[Worker {worker_id}] CPU affinity: {affinity[0]}-{affinity[-1]}")
 
     mcts_opponent = None
     if opponent_engine_path and os.path.exists(opponent_engine_path):
@@ -367,6 +394,7 @@ def batched_worker_process(
 ):
     """单卡单 TensorRT context，同时推进多盘自对弈以填满网络 batch。"""
 
+    affinity = apply_worker_affinity(worker_id)
     os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
     device = torch.device('cuda:0')
     signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -501,6 +529,11 @@ def batched_worker_process(
         f"并发 {len(active_slots)}，MCTS batch {config.MCTS_BATCH_SIZE}，"
         f"线程 {config.MCTS_THREADS}，缓存 {getattr(config, 'MCTS_EVAL_CACHE_SIZE', 32768)}，"
         f"随机开局比例 {getattr(config, 'FORCED_OPENING_RATIO', 0.0):.0%}"
+        + (
+            f"，CPU {affinity[0]}-{affinity[-1]}"
+            if affinity
+            else ""
+        )
     )
 
     while active_slots:

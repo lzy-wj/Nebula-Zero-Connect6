@@ -72,7 +72,13 @@ def parse_args():
     )
     parser.add_argument("--architecture", choices=sorted(ARCHITECTURES), required=True)
     parser.add_argument("--task", choices=("exact", "pair"), default="exact")
-    parser.add_argument("--data-root", default=paths["data"])
+    parser.add_argument(
+        "--data-root",
+        dest="data_roots",
+        action="append",
+        default=None,
+        help="replay directory; repeat to merge isolated replay roots",
+    )
     parser.add_argument("--teacher-checkpoint", default=paths["teacher"])
     parser.add_argument("--output-dir", default=paths["output"])
     parser.add_argument("--run-name", default=None)
@@ -505,6 +511,8 @@ def save_pair_metadata(raw_model, args, output_dir):
 
 def main():
     args = parse_args()
+    if args.data_roots is None:
+        args.data_roots = [default_paths()["data"]]
     if args.resume and args.init_checkpoint:
         raise ValueError("--resume and --init-checkpoint are mutually exclusive")
     if not 0.0 <= args.distill_policy_weight <= 1.0:
@@ -528,7 +536,7 @@ def main():
     torch.set_float32_matmul_precision("high")
 
     training_records, validation_records, data_stats = load_replay_records(
-        args.data_root,
+        args.data_roots,
         recent_generations=args.recent_generations,
         max_train_games=args.max_train_games,
         max_validation_games=args.max_validation_games,

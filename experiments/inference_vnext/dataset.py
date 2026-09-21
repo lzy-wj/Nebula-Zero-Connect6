@@ -46,19 +46,29 @@ def player_at_move(move_index):
     return -1 if ((move_index + 1) // 2) % 2 else 1
 
 
+def _normalize_data_roots(data_roots):
+    if isinstance(data_roots, (str, bytes, os.PathLike)):
+        return [os.fspath(data_roots)]
+    roots = [os.fspath(root) for root in data_roots]
+    if not roots:
+        raise ValueError("at least one replay root is required")
+    return roots
+
+
 def discover_replay_files(data_root, recent_generations=0):
     partitions = {"train": [], "validation": []}
     generations = set()
-    for name in os.listdir(data_root):
-        match = REPLAY_PATTERN.match(name)
-        if not match:
-            continue
-        generation = int(match.group(1))
-        partition = match.group(2)
-        partitions[partition].append(
-            (generation, os.path.join(data_root, name))
-        )
-        generations.add(generation)
+    for root in _normalize_data_roots(data_root):
+        for name in os.listdir(root):
+            match = REPLAY_PATTERN.match(name)
+            if not match:
+                continue
+            generation = int(match.group(1))
+            partition = match.group(2)
+            partitions[partition].append(
+                (generation, os.path.join(root, name))
+            )
+            generations.add(generation)
 
     if recent_generations > 0:
         selected = set(sorted(generations)[-recent_generations:])

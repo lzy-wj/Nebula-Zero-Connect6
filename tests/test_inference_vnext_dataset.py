@@ -8,6 +8,7 @@ from experiments.inference_vnext.dataset import (
     ReplayGame,
     load_replay_records,
 )
+from experiments.inference_vnext.prepare_replay import split_replay
 
 
 def make_record(offset=0):
@@ -80,3 +81,46 @@ def test_replay_loader_keeps_validation_partition_independent(tmp_path):
     assert len(validation) == 1
     assert statistics["train_games"] == 1
     assert statistics["validation_games"] == 1
+
+
+def test_replay_loader_merges_multiple_roots(tmp_path):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    write_game(first / "gen_0010_train.csv", (0, 1, 2, 3))
+    write_game(first / "gen_0010_validation.csv", (4, 5, 6, 7))
+    write_game(second / "gen_0011_train.csv", (8, 9, 10, 11))
+    write_game(second / "gen_0011_validation.csv", (12, 13, 14, 15))
+
+    training, validation, statistics = load_replay_records([first, second])
+
+    assert len(training) == 2
+    assert len(validation) == 2
+    assert statistics["train_games"] == 2
+    assert statistics["validation_games"] == 2
+
+
+def test_prepare_replay_writes_deterministic_partitions(tmp_path):
+    source = tmp_path / "selfplay.csv"
+    with source.open("w", newline="", encoding="utf-8") as output:
+        writer = csv.writer(output)
+        writer.writerow(("moves", "winner", "policies", "bonuses"))
+        for offset in range(6):
+            moves = tuple(range(offset * 4, offset * 4 + 4))
+            coordinates = [f"{chr(ord('a') + move % 19)}{move // 19 + 1}" for move in moves]
+            policies = [f"{move}:1.0" for move in moves]
+            writer.writerow((
+                ",".join(coordinates),
+                "black",
+                "|".join(policies),
+                "0.00",
+            ))
+
+    result = split_replay(source, tmp_path / "prepared", 273, 2, 7)
+    training, validation, _ = load_replay_records(tmp_path / "prepared")
+
+    assert result["train_games"] == 4
+    assert result["validation_games"] == 2
+    assert len(training) == 4
+    assert len(validation) == 2

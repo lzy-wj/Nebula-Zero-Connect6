@@ -9,6 +9,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 ENTRYPOINTS = (
     "experiments/inference_vnext/export_onnx.py",
+    "experiments/inference_vnext/prepare_replay.py",
     "experiments/inference_vnext/train.py",
     "experiments/inference_vnext/validate_engine.py",
     "experiments/search_sparsity/probe_budget.py",

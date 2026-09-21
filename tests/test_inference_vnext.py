@@ -15,6 +15,7 @@ from experiments.inference_vnext.model import (
     build_architecture,
 )
 from experiments.inference_vnext.wrapper import FusedPairSelfPlayWrapper
+from experiments.inference_vnext.wrapper import NativePairHeads
 
 
 def assert_policy_value_model(model):
@@ -113,3 +114,26 @@ def test_pair_wrapper_outputs_all_conditional_tensors():
         (2, 361),
     ]
     assert all(torch.isfinite(output).all() for output in outputs)
+
+
+def test_native_pair_heads_start_from_parent_value_and_backpropagate():
+    heads = NativePairHeads(feature_dim=48, pair_rank=8)
+    features = torch.randn(2, 361, 48, requires_grad=True)
+    parent_value = torch.tensor([[0.25], [-0.5]])
+    parent_policy = torch.randn(2, 361)
+    first_moves = torch.tensor([10, 20])
+
+    candidate, first, pair_values, _ = heads.forward_all(features, parent_value)
+    second_logits, conditional_value = heads.conditional_outputs(
+        parent_policy,
+        candidate,
+        first,
+        pair_values,
+        first_moves,
+    )
+    (second_logits.mean() + conditional_value.mean()).backward()
+
+    assert second_logits.shape == (2, 361)
+    assert torch.allclose(conditional_value, parent_value.flatten(), atol=1e-6)
+    assert features.grad is not None
+    assert torch.isfinite(features.grad).all()

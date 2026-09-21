@@ -491,4 +491,6 @@ def build_architecture(name):
     except KeyError as error:
         choices = ", ".join(sorted(ARCHITECTURES))
         raise ValueError(f"unknown architecture {name!r}; choose from {choices}") from error
-    return factory()
+    model = factory()
+    model.architecture_name = name
+    return model

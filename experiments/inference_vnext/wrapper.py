@@ -1,41 +1,147 @@
 """Raw-board TensorRT wrappers shared by inference-first candidates."""
 
+import math
+
 import torch
 from torch import nn
 from torch.nn import functional as F
 
 
+class NativePairHeads(nn.Module):
+    """Trainable low-rank pair policy and vector conditional value heads."""
+
+    def __init__(self, feature_dim, pair_rank=16, board_size=19):
+        super().__init__()
+        self.feature_dim = int(feature_dim)
+        self.pair_rank = int(pair_rank)
+        self.board_size = int(board_size)
+        self.candidate_projection = nn.Linear(
+            self.feature_dim,
+            self.pair_rank,
+            bias=False,
+        )
+        self.first_projection = nn.Linear(
+            self.feature_dim,
+            self.pair_rank,
+            bias=False,
+        )
+        pair_value_hidden = max(64, self.feature_dim // 2)
+        self.global_projection = nn.Linear(
+            self.feature_dim,
+            pair_value_hidden,
+        )
+        self.action_projection = nn.Linear(
+            self.feature_dim,
+            pair_value_hidden,
+            bias=False,
+        )
+        self.value_output = nn.Linear(pair_value_hidden, 1)
+        self.base_scale = nn.Parameter(torch.ones(()))
+        relative_count = (self.board_size * 2 - 1) ** 2
+        self.relative_bias = nn.Parameter(torch.zeros(relative_count))
+
+        positions = torch.arange(self.board_size * self.board_size)
+        self.register_buffer(
+            "candidate_rows",
+            positions // self.board_size,
+            persistent=False,
+        )
+        self.register_buffer(
+            "candidate_columns",
+            positions % self.board_size,
+            persistent=False,
+        )
+        nn.init.normal_(self.candidate_projection.weight, std=0.02)
+        nn.init.normal_(self.first_projection.weight, std=0.02)
+        nn.init.zeros_(self.value_output.weight)
+        nn.init.zeros_(self.value_output.bias)
+
+    def normalize(self, features):
+        return F.layer_norm(features, (self.feature_dim,))
+
+    def forward_all_from_normalized(self, normalized, parent_value):
+        candidate_factors = self.candidate_projection(normalized)
+        first_factors = self.first_projection(normalized)
+        global_features = normalized.mean(dim=1)
+        hidden = (
+            self.global_projection(global_features).unsqueeze(1)
+            + self.action_projection(normalized)
+        )
+        residual = self.value_output(F.gelu(hidden)).squeeze(2)
+        parent_value = parent_value.float().flatten().clamp(-0.999, 0.999)
+        parent_logit = 0.5 * (
+            torch.log1p(parent_value) - torch.log1p(-parent_value)
+        )
+        pair_value = torch.tanh(parent_logit.unsqueeze(1) + residual.float())
+        return candidate_factors, first_factors, pair_value
+
+    def forward_all(self, features, parent_value):
+        normalized = self.normalize(features)
+        outputs = self.forward_all_from_normalized(normalized, parent_value)
+        return (*outputs, normalized)
+
+    def relative_indices(self, first_moves):
+        first_rows = first_moves // self.board_size
+        first_columns = first_moves % self.board_size
+        relative_rows = self.candidate_rows.unsqueeze(0) - first_rows.unsqueeze(1)
+        relative_columns = (
+            self.candidate_columns.unsqueeze(0) - first_columns.unsqueeze(1)
+        )
+        relative_size = self.board_size * 2 - 1
+        return (
+            (relative_rows + self.board_size - 1) * relative_size
+            + relative_columns
+            + self.board_size
+            - 1
+        )
+
+    def conditional_outputs(
+        self,
+        parent_policy_logits,
+        candidate_factors,
+        first_factors,
+        pair_values,
+        first_moves,
+    ):
+        batch_indices = torch.arange(
+            first_moves.shape[0],
+            device=first_moves.device,
+        )
+        selected_first = first_factors[batch_indices, first_moves]
+        compatibility = (
+            candidate_factors * selected_first.unsqueeze(1)
+        ).sum(dim=2) / math.sqrt(self.pair_rank)
+        relative_index = self.relative_indices(first_moves)
+        second_logits = (
+            self.base_scale * parent_policy_logits
+            + compatibility
+            + self.relative_bias[relative_index]
+        )
+        conditional_value = pair_values[batch_indices, first_moves]
+        return second_logits, conditional_value
+
+
 class FusedPairSelfPlayWrapper(nn.Module):
     """Fuse board encoding, rules and native low-rank pair outputs."""
 
-    def __init__(self, model, compute_dtype=torch.float16, pair_rank=16):
+    def __init__(
+        self,
+        model,
+        compute_dtype=torch.float16,
+        pair_rank=16,
+        pair_heads=None,
+    ):
         super().__init__()
         self.model = model
         self.compute_dtype = compute_dtype
         self.pair_rank = int(pair_rank)
         feature_dim = int(model.feature_dim)
-
-        self.candidate_projection = nn.Linear(
+        self.pair_heads = pair_heads or NativePairHeads(
             feature_dim,
-            self.pair_rank,
-            bias=False,
+            pair_rank=self.pair_rank,
         )
-        self.first_projection = nn.Linear(
-            feature_dim,
-            self.pair_rank,
-            bias=False,
-        )
-        pair_value_hidden = max(64, feature_dim // 2)
-        self.pair_global_projection = nn.Linear(
-            feature_dim,
-            pair_value_hidden,
-        )
-        self.pair_action_projection = nn.Linear(
-            feature_dim,
-            pair_value_hidden,
-            bias=False,
-        )
-        self.pair_value_output = nn.Linear(pair_value_hidden, 1)
+        if self.pair_heads.pair_rank != self.pair_rank:
+            raise ValueError("pair head rank does not match wrapper rank")
 
         kernels = torch.zeros((4, 1, 6, 6), dtype=torch.float32)
         kernels[0, 0, 0, :] = 1
@@ -82,21 +188,13 @@ class FusedPairSelfPlayWrapper(nn.Module):
             return_features=True,
         )
         raw_value = raw_value.flatten()
-        normalized = F.layer_norm(features, (self.model.feature_dim,))
-        candidate_factors = self.candidate_projection(normalized)
-        first_factors = self.first_projection(normalized)
-
-        global_features = normalized.mean(dim=1)
-        pair_hidden = (
-            self.pair_global_projection(global_features).unsqueeze(1)
-            + self.pair_action_projection(normalized)
+        normalized = self.pair_heads.normalize(features)
+        candidate_factors, first_factors, pair_value = (
+            self.pair_heads.forward_all_from_normalized(
+                normalized,
+                raw_value,
+            )
         )
-        pair_residual = self.pair_value_output(F.gelu(pair_hidden)).squeeze(2)
-        parent_logit = 0.5 * (
-            torch.log1p(raw_value.float().clamp(-0.999, 0.999))
-            - torch.log1p(-raw_value.float().clamp(-0.999, 0.999))
-        )
-        pair_value = torch.tanh(parent_logit.unsqueeze(1) + pair_residual.float())
 
         policy_logits = policy_logits.float().masked_fill(
             empty.flatten(1).eq(0),

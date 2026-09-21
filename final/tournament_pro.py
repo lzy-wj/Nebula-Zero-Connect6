@@ -1,15 +1,13 @@
 import sys
 import os
-import argparse
 import glob
 import re
 import random
 import json
 import time
-import shutil
+import subprocess
 import numpy as np
 import torch
-from datetime import datetime
 
 # Add paths
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../reinforcement_learning')))
@@ -27,11 +25,6 @@ RESULTS_DIR = os.path.join(FINAL_DIR, "results")
 os.makedirs(LOGS_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
-# --- Helpers ---
-def run_command(cmd):
-    print(f"Running: {cmd}")
-    os.system(cmd)
-
 class TournamentEngine:
     def __init__(self, use_gpu='0'):
         self.device = torch.device(f'cuda:{use_gpu}' if torch.cuda.is_available() else 'cpu')
@@ -42,20 +35,27 @@ class TournamentEngine:
         engine_path = pth_path.replace('.pth', '.engine')
         if not os.path.exists(engine_path):
             print(f"Building engine for {pth_path}...")
-            # 1. Export ONNX
             onnx_path = engine_path.replace('.engine', '.onnx')
             script_export = os.path.join(config.BASE_DIR, 'pipeline/export_onnx.py')
-            cmd_export = f"CUDA_VISIBLE_DEVICES={self.gpu_id} python3 {script_export} {pth_path} {onnx_path}"
-            os.system(cmd_export)
-            
-            # 2. Build Engine
             script_build = os.path.join(config.BASE_DIR, 'pipeline/build_engine.py')
-            cmd_build = f"CUDA_VISIBLE_DEVICES={self.gpu_id} python3 {script_build} {onnx_path} {engine_path}"
-            os.system(cmd_build)
-            
-            # Cleanup
-            if os.path.exists(onnx_path):
-                os.remove(onnx_path)
+            env = os.environ.copy()
+            env['CUDA_VISIBLE_DEVICES'] = str(self.gpu_id)
+            try:
+                subprocess.run(
+                    [sys.executable, script_export, pth_path, onnx_path],
+                    check=True,
+                    env=env,
+                )
+                subprocess.run(
+                    [sys.executable, script_build, onnx_path, engine_path],
+                    check=True,
+                    env=env,
+                )
+                if not os.path.isfile(engine_path):
+                    raise RuntimeError(f"Engine build produced no output: {engine_path}")
+            finally:
+                if os.path.exists(onnx_path):
+                    os.remove(onnx_path)
         return engine_path
 
     def play_game(self, black_path, white_path, simulations, game_id, round_name):
@@ -75,16 +75,11 @@ class TournamentEngine:
         try:
             mcts_black = MCTSEngine(black_engine_path, device=self.device)
             mcts_white = MCTSEngine(white_engine_path, device=self.device)
-            
+
             mcts_black.set_params(batch_size=32, num_threads=4)
             mcts_white.set_params(batch_size=32, num_threads=4)
-        except Exception as e:
-            print(f"初始化引擎错误: {e}")
-            return 0, []
 
-        game = Connect6Game()
-        
-        try:
+            game = Connect6Game()
             # Game Loop
             while game.winner == 0:
                 if game.current_player == 1:
@@ -92,11 +87,8 @@ class TournamentEngine:
                 else:
                     current_mcts = mcts_white
                     
-                # Setup callback
-                from core.mcts import mcts_lib
-                mcts_lib.set_eval_callback(current_mcts.c_callback)
-                
                 # Replay history (Essential for correct state)
+                from core.mcts import mcts_lib
                 mcts_lib.init_game()
                 for m_str in game.moves:
                     r, c = game._parse_coord(m_str)
@@ -107,11 +99,6 @@ class TournamentEngine:
                 temp = 0.5 if len(game.moves) < 6 else 0.0 
                 move = current_mcts.get_mcts_move(simulations=simulations, temperature=temp)
                 game.play(move)
-                
-                # Safety check for stuck games
-                if len(game.moves) > 200:
-                    print("对局过长，强制平局。")
-                    return 2, game.moves
 
             result = game.winner
             
@@ -149,8 +136,10 @@ class TournamentManager:
         }
 
     def save_state(self):
-        with open(STATE_FILE, 'w') as f:
+        temporary = f"{STATE_FILE}.tmp"
+        with open(temporary, 'w', encoding='utf-8') as f:
             json.dump(self.state, f, indent=4)
+        os.replace(temporary, STATE_FILE)
 
     def get_models(self):
         # Scan for all available generations
@@ -219,8 +208,10 @@ class TournamentManager:
                 gs[w_name] += 1
                 gs[b_name] -= 1
                 res_str = "白胜"
-            else:
+            elif winner == 2:
                 res_str = "平局"
+            else:
+                raise RuntimeError(f"无效赛果 {winner!r}，本局不计分")
             
             print(f" {res_str} ({dur:.1f}s)")
             

@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import math
 import os
 import sys
 
@@ -143,6 +144,53 @@ def main():
             "max_abs": float(error.max()),
             "mean_abs": float(error.mean()),
         }
+    derived_pair = None
+    if args.pair:
+        first_moves = expected_outputs[0].argmax(dim=1)
+        batch_indices = torch.arange(len(counts), device=device)
+        relative_index = wrapper.pair_heads.relative_indices(first_moves)
+        relative_bias = wrapper.pair_heads.relative_bias.float()[relative_index]
+        base_scale = wrapper.pair_heads.base_scale.float()
+
+        def conditional_policy(policy, candidate, first):
+            selected_first = first.float()[batch_indices, first_moves]
+            compatibility = (
+                candidate.float() * selected_first.unsqueeze(1)
+            ).sum(dim=2) / math.sqrt(args.pair_rank)
+            logits = (
+                base_scale * torch.log(policy.float().clamp_min(1e-12))
+                + compatibility
+                + relative_bias
+            )
+            illegal = boards.ne(0).flatten(1)
+            illegal.scatter_(1, first_moves[:, None], True)
+            return torch.softmax(logits.masked_fill(illegal, -10_000.0), dim=1)
+
+        expected_second = conditional_policy(
+            expected_outputs[0],
+            expected_outputs[2],
+            expected_outputs[3],
+        )
+        actual_second = conditional_policy(
+            tensors["policy1"],
+            tensors["pair_candidate"],
+            tensors["pair_first"],
+        )
+        probability_error = (actual_second - expected_second).abs()
+        expected_value = expected_outputs[4].float()[batch_indices, first_moves]
+        actual_value = tensors["pair_value"].float()[batch_indices, first_moves]
+        value_error = (actual_value - expected_value).abs()
+        derived_pair = {
+            "second_policy_max_abs": float(probability_error.max()),
+            "second_policy_mean_abs": float(probability_error.mean()),
+            "second_policy_top1_agreement": float(
+                actual_second.argmax(dim=1).eq(
+                    expected_second.argmax(dim=1)
+                ).float().mean()
+            ),
+            "selected_value_max_abs": float(value_error.max()),
+            "selected_value_mean_abs": float(value_error.mean()),
+        }
     print(json.dumps({
         "architecture": args.architecture,
         "engine": os.path.abspath(args.engine),
@@ -150,6 +198,7 @@ def main():
         "pair_rank": args.pair_rank if args.pair else None,
         "stone_counts": counts,
         "outputs": metrics,
+        "derived_pair": derived_pair,
     }, indent=2))
 
 

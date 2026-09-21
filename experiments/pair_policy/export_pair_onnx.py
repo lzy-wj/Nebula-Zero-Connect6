@@ -15,14 +15,18 @@ import torch.nn.functional as F
 
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-RL_DIR = os.path.join(ROOT, "reinforcement_learning")
-sys.path.insert(0, RL_DIR)
-sys.path.insert(0, os.path.dirname(__file__))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
-import config
-from core.model import C6TransNet
-from pipeline.export_onnx import FusedSelfPlayExportWrapper
-from model import PairPolicyHead, PairValueHead, VectorPairValueHead, normalize_tokens
+from experiments.pair_policy.model import (
+    PairPolicyHead,
+    PairValueHead,
+    VectorPairValueHead,
+    normalize_tokens,
+)
+from reinforcement_learning import config
+from reinforcement_learning.core.model import C6TransNet
+from reinforcement_learning.pipeline.export_onnx import FusedSelfPlayExportWrapper
 
 
 class PairFusedExportWrapper(FusedSelfPlayExportWrapper):

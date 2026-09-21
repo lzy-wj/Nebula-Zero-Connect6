@@ -5,8 +5,14 @@ import csv
 import json
 import os
 import random
+import sys
 
-from data_metrics import analyze_games
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+from experiments.pair_policy.data_metrics import analyze_games
 
 
 HEADER = ["moves", "winner", "policies", "bonuses"]

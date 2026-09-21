@@ -5,12 +5,11 @@ import tempfile
 import unittest
 
 
-PAIR_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "experiments", "pair_policy")
-)
-sys.path.insert(0, PAIR_DIR)
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
-from data_metrics import analyze_games
+from experiments.pair_policy.data_metrics import analyze_games
 
 
 class PairDataMetricsTest(unittest.TestCase):

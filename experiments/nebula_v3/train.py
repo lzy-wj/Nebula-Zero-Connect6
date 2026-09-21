@@ -19,16 +19,17 @@ from torch.utils.data import DataLoader, Sampler
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..'))
-sys.path.insert(0, SCRIPT_DIR)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
-from dataset import SelfPlayPositionDataset, load_game_records, seed_data_worker
-from model import NebulaNetV3
-from model_fast import FastC6NetV4
-
-RL_DIR = os.path.join(PROJECT_ROOT, 'reinforcement_learning')
-if RL_DIR not in sys.path:
-    sys.path.insert(0, RL_DIR)
-from core.model import C6TransNet
+from experiments.nebula_v3.dataset import (
+    SelfPlayPositionDataset,
+    load_game_records,
+    seed_data_worker,
+)
+from experiments.nebula_v3.model import NebulaNetV3
+from experiments.nebula_v3.model_fast import FastC6NetV4
+from reinforcement_learning.core.model import C6TransNet
 
 
 class WeightedDistributedSampler(Sampler):

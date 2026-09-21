@@ -10,11 +10,10 @@ import torch.nn as nn
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..'))
-RL_DIR = os.path.join(PROJECT_ROOT, 'reinforcement_learning')
-if RL_DIR not in sys.path:
-    sys.path.insert(0, RL_DIR)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
-from core.model import RelativeGlobalAttention, SEBlock
+from reinforcement_learning.core.model import RelativeGlobalAttention, SEBlock
 
 
 BOARD_SIZE = 19

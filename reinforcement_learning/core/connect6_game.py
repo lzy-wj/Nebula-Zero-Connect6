@@ -28,6 +28,13 @@ class Connect6Game:
         Execute a move (0-360).
         Automatically handles turn switching (1 stone for first move, 2 stones thereafter).
         """
+        if (
+            isinstance(move_idx, (bool, np.bool_))
+            or not isinstance(move_idx, (int, np.integer))
+            or not 0 <= int(move_idx) < self.board_size * self.board_size
+        ):
+            raise ValueError(f"Invalid move index: {move_idx!r}")
+        move_idx = int(move_idx)
         r, c = move_idx // 19, move_idx % 19
         if self.board[r, c] != 0:
              raise ValueError(f"Invalid move: {r}, {c} is already occupied")

@@ -8,10 +8,10 @@ import time
 
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-RL_DIR = os.path.join(ROOT, "reinforcement_learning")
-sys.path.insert(0, RL_DIR)
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
-from pipeline.evaluate import play_match
+from experiments.pair_policy.gating import paired_score_statistics
 
 
 def atomic_json_dump(payload, path):
@@ -47,6 +47,11 @@ def main():
     parser.add_argument("--opening-stones", type=int, default=5)
     parser.add_argument("--seed", type=int, default=2026)
     args = parser.parse_args()
+    if args.games <= 0 or args.games % 2:
+        parser.error("--games 必须是正偶数，确保每个开局完成换色配对")
+
+    # Keep --help and argument validation usable before libmcts is compiled.
+    from reinforcement_learning.pipeline.evaluate import play_match
 
     started_at = time.perf_counter()
     stats, data_lines = play_match(
@@ -88,6 +93,7 @@ def main():
             stats["win_steps"] + stats["loss_steps"] + stats["draw_steps"]
         ) / total,
         "elapsed_seconds": time.perf_counter() - started_at,
+        **paired_score_statistics(stats.get("engine1_scores", [])),
     }
     atomic_json_dump(result, args.output)
     if args.data_output:

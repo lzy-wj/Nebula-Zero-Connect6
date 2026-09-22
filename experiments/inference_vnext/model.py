@@ -313,6 +313,146 @@ class DualScaleNet(PolicyValueMixin, nn.Module):
         return tokens, global_features
 
 
+class PyramidNet(PolicyValueMixin, nn.Module):
+    """Keep the policy grid shallow while moving capacity to cheaper scales."""
+
+    def __init__(
+        self,
+        input_planes=5,
+        high_channels=192,
+        mid_channels=320,
+        low_channels=512,
+        feature_dim=320,
+        high_depth=2,
+        mid_depth=5,
+        low_depth=7,
+        global_depth=1,
+        num_heads=8,
+    ):
+        super().__init__()
+        if min(high_depth, mid_depth, low_depth) < 1:
+            raise ValueError("pyramid stage depths must be positive")
+        if global_depth < 0:
+            raise ValueError("global_depth must not be negative")
+        if low_channels % num_heads:
+            raise ValueError("low_channels must be divisible by num_heads")
+
+        self.feature_dim = int(feature_dim)
+        self.stem = nn.Conv2d(
+            input_planes,
+            high_channels,
+            kernel_size=3,
+            padding=1,
+            bias=True,
+        )
+        self.high_blocks = nn.ModuleList([
+            BottleneckBlock(
+                high_channels,
+                high_channels // 2,
+                dilation=(1, 2)[index % 2],
+            )
+            for index in range(high_depth)
+        ])
+        self.down_mid = nn.Conv2d(
+            high_channels,
+            mid_channels,
+            kernel_size=3,
+            stride=2,
+            padding=1,
+            bias=True,
+        )
+        self.mid_blocks = nn.ModuleList([
+            BottleneckBlock(
+                mid_channels,
+                mid_channels // 2,
+                dilation=(1, 2, 3, 1)[index % 4],
+            )
+            for index in range(mid_depth)
+        ])
+        self.down_low = nn.Conv2d(
+            mid_channels,
+            low_channels,
+            kernel_size=3,
+            stride=2,
+            padding=1,
+            bias=True,
+        )
+        self.low_blocks = nn.ModuleList([
+            BottleneckBlock(low_channels, low_channels // 2)
+            for _ in range(low_depth)
+        ])
+        self.global_blocks = nn.ModuleList([
+            AttentionBlock(low_channels, num_heads=num_heads, expansion=2)
+            for _ in range(global_depth)
+        ])
+
+        self.low_to_mid = nn.Conv2d(low_channels, mid_channels, 1, bias=True)
+        self.mid_refine = BottleneckBlock(mid_channels, mid_channels // 2)
+        self.mid_to_high = nn.Conv2d(
+            mid_channels,
+            feature_dim,
+            1,
+            bias=True,
+        )
+        self.high_skip = nn.Conv2d(
+            high_channels,
+            feature_dim,
+            1,
+            bias=True,
+        )
+        self.high_refine = BottleneckBlock(feature_dim, feature_dim // 2)
+        self.policy_head = nn.Sequential(
+            nn.Linear(feature_dim, 96),
+            nn.ReLU(),
+            nn.Linear(96, 1),
+        )
+        self.value_head = nn.Sequential(
+            nn.Linear(low_channels, low_channels),
+            nn.ReLU(),
+            nn.Linear(low_channels, 1),
+            nn.Tanh(),
+        )
+
+    def forward_features(self, inputs):
+        high = F.relu(self.stem(inputs))
+        for block in self.high_blocks:
+            high = block(high)
+
+        mid = F.relu(self.down_mid(high))
+        for block in self.mid_blocks:
+            mid = block(mid)
+
+        low = F.relu(self.down_low(mid))
+        for block in self.low_blocks:
+            low = block(low)
+
+        low_tokens = low.flatten(2).transpose(1, 2)
+        for block in self.global_blocks:
+            low_tokens = block(low_tokens)
+        low = low_tokens.transpose(1, 2).reshape(
+            inputs.shape[0],
+            low_tokens.shape[2],
+            5,
+            5,
+        )
+
+        decoded_mid = F.interpolate(low, size=(10, 10), mode="nearest")
+        decoded_mid = F.relu(self.low_to_mid(decoded_mid) + mid)
+        decoded_mid = self.mid_refine(decoded_mid)
+        decoded_high = F.interpolate(
+            decoded_mid,
+            size=(BOARD_SIZE, BOARD_SIZE),
+            mode="nearest",
+        )
+        decoded_high = F.relu(
+            self.mid_to_high(decoded_high) + self.high_skip(high)
+        )
+        decoded_high = self.high_refine(decoded_high)
+
+        tokens = decoded_high.flatten(2).transpose(1, 2)
+        return tokens, low_tokens.mean(dim=1)
+
+
 class SparseStoneNet(PolicyValueMixin, nn.Module):
     """Represent occupied points sparsely and query all policy coordinates."""
 
@@ -457,6 +597,39 @@ ARCHITECTURES = {
         local_depth=16,
         global_depth=3,
         num_heads=10,
+    ),
+    "pyramid_c256_d12": lambda: PyramidNet(
+        high_channels=160,
+        mid_channels=256,
+        low_channels=384,
+        feature_dim=256,
+        high_depth=2,
+        mid_depth=4,
+        low_depth=6,
+        global_depth=1,
+        num_heads=6,
+    ),
+    "pyramid_c320_d14": lambda: PyramidNet(
+        high_channels=192,
+        mid_channels=320,
+        low_channels=512,
+        feature_dim=320,
+        high_depth=2,
+        mid_depth=5,
+        low_depth=7,
+        global_depth=1,
+        num_heads=8,
+    ),
+    "pyramid_wide_c256_d17": lambda: PyramidNet(
+        high_channels=160,
+        mid_channels=320,
+        low_channels=512,
+        feature_dim=256,
+        high_depth=2,
+        mid_depth=5,
+        low_depth=10,
+        global_depth=0,
+        num_heads=8,
     ),
     "sparse_stone_c192_k64": lambda: SparseStoneNet(
         feature_dim=192,

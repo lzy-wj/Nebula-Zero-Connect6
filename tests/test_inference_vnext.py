@@ -11,6 +11,7 @@ if ROOT not in sys.path:
 from experiments.inference_vnext.model import (
     BottleneckGlobalNet,
     DualScaleNet,
+    PyramidNet,
     SparseStoneNet,
     build_architecture,
 )
@@ -55,6 +56,20 @@ def test_dual_scale_forward_backward():
     ))
 
 
+def test_pyramid_forward_backward():
+    assert_policy_value_model(PyramidNet(
+        high_channels=32,
+        mid_channels=48,
+        low_channels=64,
+        feature_dim=48,
+        high_depth=1,
+        mid_depth=1,
+        low_depth=1,
+        global_depth=1,
+        num_heads=4,
+    ))
+
+
 def test_sparse_stone_forward_backward():
     assert_policy_value_model(SparseStoneNet(
         feature_dim=48,
@@ -85,6 +100,7 @@ def test_registered_architectures_build():
     for name in (
         "bottleneck_c192",
         "dual_scale_c192",
+        "pyramid_c256_d12",
         "sparse_stone_c192_k64",
     ):
         model = build_architecture(name)

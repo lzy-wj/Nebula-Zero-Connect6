@@ -54,12 +54,22 @@ def main():
     parser.add_argument('--simulations', type=int, default=1200)
     parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--threads', type=int, default=32)
+    parser.add_argument(
+        '--tree-batch-size',
+        type=int,
+        default=0,
+        help='每棵树每轮并发选择数；0 表示沿用 GPU batch',
+    )
+    parser.add_argument('--cpuct', type=float, default=1.5)
+    parser.add_argument('--widening-base', type=int, default=20)
+    parser.add_argument('--widening-scale', type=float, default=0.25)
     parser.add_argument('--opening-stones', type=int, default=9)
     parser.add_argument('--warmup-simulations', type=int, default=256)
     parser.add_argument('--repeats', type=int, default=3)
     parser.add_argument('--cache-capacity', type=int, default=32768)
     parser.add_argument('--seed', type=int, default=2026)
     parser.add_argument('--deterministic', action='store_true')
+    parser.add_argument('--unique-leaves', action='store_true')
     args = parser.parse_args()
 
     if args.mcts_library:
@@ -72,7 +82,14 @@ def main():
     if not engine.supports_multi_context:
         raise RuntimeError('当前 MCTS 动态库不支持多棋局基准')
     engine.set_params(batch_size=args.batch_size, num_threads=args.threads)
+    engine.set_tree_batch_size(args.tree_batch_size)
+    engine.set_search_params(
+        args.cpuct,
+        args.widening_base,
+        args.widening_scale,
+    )
     engine.set_deterministic_selection(args.deterministic)
+    engine.set_unique_leaf_batching(args.unique_leaves)
     engine.set_eval_cache_capacity(args.cache_capacity)
 
     warmup_contexts = build_contexts(engine, 2, args.opening_stones, args.seed - 1)
@@ -140,6 +157,11 @@ def main():
         'mcts_library': args.mcts_library,
         'batch_size': args.batch_size,
         'threads': args.threads,
+        'tree_batch_size': args.tree_batch_size,
+        'cpuct': args.cpuct,
+        'widening_base': args.widening_base,
+        'widening_scale': args.widening_scale,
+        'unique_leaves': args.unique_leaves,
         'simulations_per_context': args.simulations,
         'cache_capacity': args.cache_capacity,
         'results': results,

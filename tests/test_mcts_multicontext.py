@@ -75,6 +75,8 @@ def mcts_library(tmp_path_factory):
 
     library.set_mcts_params.argtypes = [ctypes.c_int, ctypes.c_int]
     library.set_mcts_params(16, 4)
+    library.set_mcts_unique_leaf_batching.argtypes = [ctypes.c_int]
+    library.get_total_duplicate_leaf_rejections.restype = ctypes.c_longlong
     library.set_eval_cache_capacity.argtypes = [ctypes.c_longlong]
     library.set_eval_cache_capacity(4096)
     library.get_eval_cache_size.restype = ctypes.c_longlong
@@ -216,3 +218,27 @@ def test_unchanged_pair_parameters_preserve_persistent_cache(mcts_library):
         assert mcts_library.get_eval_cache_size() == cached
     finally:
         mcts_library.destroy_mcts_context(context)
+
+
+def test_unique_leaf_batching_refunds_duplicate_requests(mcts_library):
+    contexts = [mcts_library.create_mcts_context(300 + index) for index in range(4)]
+    try:
+        mcts_library.clear_eval_cache()
+        mcts_library.reset_mcts_statistics()
+        mcts_library.set_mcts_unique_leaf_batching(1)
+        handles = (ctypes.c_void_p * len(contexts))(*contexts)
+        budgets = (ctypes.c_int * len(contexts))(*([64] * len(contexts)))
+        assert mcts_library.run_mcts_simulations_multi(
+            handles,
+            budgets,
+            len(contexts),
+        ) == 0
+        assert mcts_library.get_total_leaf_requests() > 0
+        assert mcts_library.get_total_duplicate_leaf_rejections() > 0
+        for context in contexts:
+            assert mcts_library.get_root_action_count_context(context) == 361
+            assert mcts_library.get_root_virtual_loss_context(context) == 0
+    finally:
+        mcts_library.set_mcts_unique_leaf_batching(0)
+        for context in contexts:
+            mcts_library.destroy_mcts_context(context)

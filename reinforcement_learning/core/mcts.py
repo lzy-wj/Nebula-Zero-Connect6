@@ -65,6 +65,7 @@ for stats_name in (
     'get_total_pair_provisional_evaluations',
     'get_total_pair_exact_refreshes',
     'get_total_pair_eager_exact_evaluations',
+    'get_total_duplicate_leaf_rejections',
 ):
     if hasattr(mcts_lib, stats_name):
         stats_function = getattr(mcts_lib, stats_name)
@@ -85,6 +86,10 @@ if hasattr(mcts_lib, 'set_mcts_params'):
     mcts_lib.set_mcts_params.argtypes = [ctypes.c_int, ctypes.c_int]
     mcts_lib.set_mcts_params.restype = None
 
+if hasattr(mcts_lib, 'set_mcts_tree_batch_size'):
+    mcts_lib.set_mcts_tree_batch_size.argtypes = [ctypes.c_int]
+    mcts_lib.set_mcts_tree_batch_size.restype = None
+
 if hasattr(mcts_lib, 'set_mcts_search_params'):
     mcts_lib.set_mcts_search_params.argtypes = [
         ctypes.c_float,
@@ -96,6 +101,11 @@ if hasattr(mcts_lib, 'set_mcts_search_params'):
 if hasattr(mcts_lib, 'set_mcts_selection_mode'):
     mcts_lib.set_mcts_selection_mode.argtypes = [ctypes.c_int]
     mcts_lib.set_mcts_selection_mode.restype = None
+
+if hasattr(mcts_lib, 'set_mcts_unique_leaf_batching'):
+    mcts_lib.set_mcts_unique_leaf_batching.argtypes = [ctypes.c_int]
+    mcts_lib.set_mcts_unique_leaf_batching.restype = None
+
 
 if hasattr(mcts_lib, 'set_eval_cache_capacity'):
     mcts_lib.set_eval_cache_capacity.argtypes = [ctypes.c_longlong]
@@ -170,7 +180,6 @@ if HAS_MULTI_CONTEXT:
             ctypes.POINTER(ctypes.c_longlong),
         ]
         mcts_lib.get_second_stone_visit_counts_context.restype = None
-
 # 回调函数类型: (batch_size, boards_ptr, policies_ptr, values_ptr)
 # batch_size: int
 # boards_ptr: int* (flattened batch)
@@ -1160,6 +1169,14 @@ class MCTSEngine:
         )
         return True
 
+    def set_tree_batch_size(self, tree_batch_size=0):
+        """Limit concurrent selections per tree while retaining large GPU batches."""
+
+        if not hasattr(mcts_lib, 'set_mcts_tree_batch_size'):
+            return False
+        mcts_lib.set_mcts_tree_batch_size(max(int(tree_batch_size), 0))
+        return True
+
     def set_deterministic_selection(self, enabled):
         """门控可顺序选择保证复现；生产自对弈默认保留并行探索吞吐。"""
 
@@ -1167,6 +1184,15 @@ class MCTSEngine:
             return False
         mcts_lib.set_mcts_selection_mode(1 if enabled else 0)
         return True
+
+    def set_unique_leaf_batching(self, enabled):
+        """Reject duplicate leaves within a selection wave and refund budget."""
+
+        if not hasattr(mcts_lib, 'set_mcts_unique_leaf_batching'):
+            return False
+        mcts_lib.set_mcts_unique_leaf_batching(1 if enabled else 0)
+        return True
+
 
     def update_state(self, move):
         mcts_lib.play_move(move)
@@ -1302,6 +1328,15 @@ class MCTSEngine:
                 'pair_saved_full_evaluations': provisional - refreshes,
                 'pair_provisional_ratio': provisional / max(leaf_requests, 1),
             })
+        if hasattr(mcts_lib, 'get_total_duplicate_leaf_rejections'):
+            duplicate_rejections = int(
+                mcts_lib.get_total_duplicate_leaf_rejections()
+            )
+            stats['duplicate_leaf_rejections'] = duplicate_rejections
+            stats['unique_leaf_acceptance_ratio'] = (
+                leaf_requests
+                / max(leaf_requests + duplicate_rejections, 1)
+            )
         stats['average_eval_batch'] = unique_evaluations / max(stats['eval_batches'], 1)
         stats['eval_batch_fill_ratio'] = (
             stats['average_eval_batch'] / max(self.max_batch_size, 1)
@@ -1331,7 +1366,7 @@ class MCTSEngine:
         policy = np.zeros(361, dtype=np.float32)
         mcts_lib.get_policy(policy.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
         return policy
-    
+
     def print_top_debug(self):
         mcts_lib.print_top_moves()
 

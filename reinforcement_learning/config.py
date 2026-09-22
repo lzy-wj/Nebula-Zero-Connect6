@@ -69,8 +69,14 @@ CURRENT_MODEL_PTH = os.path.join(CHECKPOINT_DIR, 'best.pth')               # 当
 NUM_WORKERS = int(os.environ.get('NEBULA_NUM_WORKERS', '2'))
 MCTS_THREADS = int(os.environ.get('NEBULA_MCTS_THREADS', '32'))
 MCTS_BATCH_SIZE = int(os.environ.get('NEBULA_MCTS_BATCH_SIZE', '64'))
+MCTS_TREE_BATCH_SIZE = int(os.environ.get('NEBULA_MCTS_TREE_BATCH_SIZE', '0'))
+MCTS_UNIQUE_LEAVES = os.environ.get('NEBULA_MCTS_UNIQUE_LEAVES', '0') == '1'
 MCTS_CONCURRENT_GAMES = int(os.environ.get('NEBULA_MCTS_CONCURRENT_GAMES', '12'))
 MCTS_EVAL_CACHE_SIZE = int(os.environ.get('NEBULA_MCTS_EVAL_CACHE_SIZE', '32768'))
+SELFPLAY_PROGRESS_INTERVAL = max(
+    1,
+    int(os.environ.get('NEBULA_SELFPLAY_PROGRESS_INTERVAL', '25')),
+)
 MCTS_CPUCT = float(os.environ.get('NEBULA_MCTS_CPUCT', '1.5'))
 MCTS_WIDENING_BASE = int(os.environ.get('NEBULA_MCTS_WIDENING_BASE', '20'))
 MCTS_WIDENING_SCALE = float(os.environ.get('NEBULA_MCTS_WIDENING_SCALE', '0.25'))
@@ -133,6 +139,16 @@ OPENING_MOVES = int(os.environ.get('NEBULA_OPENING_MOVES', '12'))
 FORCED_OPENING_RATIO = float(os.environ.get('NEBULA_FORCED_OPENING_RATIO', '0.0'))
 FORCED_OPENING_STONES = int(os.environ.get('NEBULA_FORCED_OPENING_STONES', '5'))
 FORCED_OPENING_RADIUS = int(os.environ.get('NEBULA_FORCED_OPENING_RADIUS', '4'))
+RANDOM_OPENING_PLIES = tuple(
+    int(value)
+    for value in os.environ.get('NEBULA_RANDOM_OPENING_PLIES', '').split(',')
+    if value.strip()
+)
+if any(value < 0 or value > 361 for value in RANDOM_OPENING_PLIES):
+    raise ValueError('NEBULA_RANDOM_OPENING_PLIES 必须位于 0..361')
+RANDOM_OPENING_UNIFORM_BOARD = (
+    os.environ.get('NEBULA_RANDOM_OPENING_UNIFORM_BOARD', '0') == '1'
+)
 
 # ==================================
 # 动态模拟参数

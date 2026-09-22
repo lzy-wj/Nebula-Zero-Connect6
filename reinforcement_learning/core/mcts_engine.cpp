@@ -239,11 +239,13 @@ using PairEvalCallback = int (*)(
 
 MCTSContext G_DEFAULT_CONTEXT(42);
 int G_BATCH_SIZE = 32;
+int G_TREE_BATCH_SIZE = 0;
 int G_NUM_THREADS = 4;
 float G_CPUCT = 1.5f;
 int G_PROGRESSIVE_WIDENING_BASE = 20;
 float G_PROGRESSIVE_WIDENING_SCALE = 0.25f;
 bool G_DETERMINISTIC_TREE_SELECTION = false;
+bool G_UNIQUE_LEAF_BATCHING = false;
 EvalCallback G_EVAL_CALLBACK = nullptr;
 PairEvalCallback G_PAIR_EVAL_CALLBACK = nullptr;
 float G_PAIR_BASE_SCALE = 1.0f;
@@ -271,6 +273,7 @@ long long G_TOTAL_CACHE_MISSES = 0;
 long long G_TOTAL_PAIR_PROVISIONAL_EVALUATIONS = 0;
 long long G_TOTAL_PAIR_EXACT_REFRESHES = 0;
 long long G_TOTAL_PAIR_EAGER_EXACT_EVALUATIONS = 0;
+long long G_TOTAL_DUPLICATE_LEAF_REJECTIONS = 0;
 
 int pair_refresh_visits(int player) {
     return player == BLACK
@@ -291,6 +294,7 @@ struct PairRefreshJob {
 
 struct SearchWorkspace {
     std::vector<MCTSContext*> batch_contexts;
+    std::vector<int> batch_context_indices;
     std::vector<MCTSNode*> batch_leaf_nodes;
     std::vector<MCTSEdge*> batch_leaf_edges;
     std::vector<MCTSNode*> batch_leaf_parents;
@@ -304,6 +308,7 @@ struct SearchWorkspace {
     std::vector<Connect6Board> batch_refresh_boards;
     std::vector<int> eval_slot;
     std::vector<BoardKey> unique_keys;
+    std::vector<int> unique_context_indices;
     std::vector<int> unique_boards;
     std::vector<float> unique_policies;
     std::vector<float> unique_values;
@@ -328,6 +333,7 @@ struct SearchWorkspace {
 
     void ensure(int request_capacity, int gpu_batch_size, int context_count) {
         batch_contexts.resize(request_capacity);
+        batch_context_indices.resize(request_capacity);
         batch_leaf_nodes.resize(request_capacity);
         batch_leaf_edges.resize(request_capacity);
         batch_leaf_parents.resize(request_capacity);
@@ -341,6 +347,7 @@ struct SearchWorkspace {
         batch_refresh_boards.resize(request_capacity);
         eval_slot.resize(request_capacity);
         unique_keys.resize(request_capacity);
+        unique_context_indices.resize(request_capacity);
         unique_boards.resize(request_capacity * BOARD_CELLS);
         unique_policies.resize(request_capacity * BOARD_CELLS);
         unique_values.resize(request_capacity);
@@ -452,6 +459,7 @@ void reset_statistics_impl() {
     G_TOTAL_PAIR_PROVISIONAL_EVALUATIONS = 0;
     G_TOTAL_PAIR_EXACT_REFRESHES = 0;
     G_TOTAL_PAIR_EAGER_EXACT_EVALUATIONS = 0;
+    G_TOTAL_DUPLICATE_LEAF_REJECTIONS = 0;
 }
 
 void backpropagate(
@@ -978,6 +986,7 @@ bool run_simulations_impl(
         static_cast<int>(contexts.size())
     );
     auto& batch_contexts = G_SEARCH_WORKSPACE.batch_contexts;
+    auto& batch_context_indices = G_SEARCH_WORKSPACE.batch_context_indices;
     auto& batch_leaf_nodes = G_SEARCH_WORKSPACE.batch_leaf_nodes;
     auto& batch_leaf_edges = G_SEARCH_WORKSPACE.batch_leaf_edges;
     auto& batch_leaf_parents = G_SEARCH_WORKSPACE.batch_leaf_parents;
@@ -991,6 +1000,7 @@ bool run_simulations_impl(
     auto& batch_refresh_boards = G_SEARCH_WORKSPACE.batch_refresh_boards;
     auto& eval_slot = G_SEARCH_WORKSPACE.eval_slot;
     auto& unique_keys = G_SEARCH_WORKSPACE.unique_keys;
+    auto& unique_context_indices = G_SEARCH_WORKSPACE.unique_context_indices;
     auto& unique_boards = G_SEARCH_WORKSPACE.unique_boards;
     auto& unique_policies = G_SEARCH_WORKSPACE.unique_policies;
     auto& unique_values = G_SEARCH_WORKSPACE.unique_values;
@@ -1022,9 +1032,18 @@ bool run_simulations_impl(
             if (remaining[context_index] <= 0 || contexts[context_index] == nullptr) {
                 continue;
             }
-            const int tree_batch = std::min(G_BATCH_SIZE, remaining[context_index]);
+            const int tree_batch_limit = G_TREE_BATCH_SIZE > 0
+                ? std::min(G_TREE_BATCH_SIZE, G_BATCH_SIZE)
+                : G_BATCH_SIZE;
+            const int tree_batch = std::min(
+                tree_batch_limit,
+                remaining[context_index]
+            );
             for (int request = 0; request < tree_batch; ++request) {
                 batch_contexts[active_batch] = contexts[context_index];
+                batch_context_indices[active_batch] = static_cast<int>(
+                    context_index
+                );
                 active_batch++;
             }
             remaining[context_index] -= tree_batch;
@@ -1075,26 +1094,32 @@ bool run_simulations_impl(
                             }
                         }
                     } else {
-                        // 同步模式保留为强度基线：再次访问时停在本节点精确刷新。
                         force_exact = true;
                         break;
                     }
                 }
                 const int parent_visits = node->total_visits();
-                const float exploration_scale = std::sqrt(static_cast<float>(std::max(parent_visits, 1)));
+                const float exploration_scale = std::sqrt(
+                    static_cast<float>(std::max(parent_visits, 1))
+                );
                 float best_score = -std::numeric_limits<float>::infinity();
                 MCTSEdge* best_edge = nullptr;
 
                 const int active_children = active_child_count(*node);
-                for (int child_index = 0; child_index < active_children; ++child_index) {
+                for (int child_index = 0;
+                     child_index < active_children;
+                     ++child_index) {
                     MCTSEdge* edge = &node->children[child_index];
                     float q = edge->q_value();
                     if (node->next_player == WHITE) {
                         q = -q;
                     }
-                    const int child_visits = edge->visit_count.load(std::memory_order_relaxed)
-                        + edge->virtual_loss.load(std::memory_order_relaxed);
-                    const float exploration = G_CPUCT * edge->prior_prob * exploration_scale
+                    const int child_visits = edge->visit_count.load(
+                        std::memory_order_relaxed
+                    ) + edge->virtual_loss.load(std::memory_order_relaxed);
+                    const float exploration = G_CPUCT
+                        * edge->prior_prob
+                        * exploration_scale
                         / static_cast<float>(1 + child_visits);
                     const float score = q + exploration;
                     if (score > best_score) {
@@ -1132,7 +1157,9 @@ bool run_simulations_impl(
                 : (node != nullptr ? node->last_move : -1);
             const int winner = scratch.check_win(last_move);
             if (winner != 0 || scratch.total_stones >= BOARD_CELLS) {
-                const float terminal_value = winner == BLACK ? 1.0f : (winner == WHITE ? -1.0f : 0.0f);
+                const float terminal_value = winner == BLACK
+                    ? 1.0f
+                    : (winner == WHITE ? -1.0f : 0.0f);
                 backpropagate(*context->root, path, path_length, terminal_value);
                 return;
             }
@@ -1198,6 +1225,22 @@ bool run_simulations_impl(
         const int hash_mask = hash_capacity - 1;
         std::fill(leaf_hash_values.begin(), leaf_hash_values.begin() + hash_capacity, -1);
         std::fill(board_hash_values.begin(), board_hash_values.begin() + hash_capacity, -1);
+        auto reject_duplicate_request = [&](int batch_index) {
+            MCTSEdge** path = batch_paths.data() + batch_index * BOARD_CELLS;
+            for (int path_index = 0;
+                 path_index < batch_path_lengths[batch_index];
+                 ++path_index) {
+                path[path_index]->virtual_loss.fetch_sub(
+                    1,
+                    std::memory_order_relaxed
+                );
+            }
+            batch_valid[batch_index] = 0;
+            const int context_index = batch_context_indices[batch_index];
+            remaining[context_index]++;
+            total_remaining++;
+            G_TOTAL_DUPLICATE_LEAF_REJECTIONS++;
+        };
         for (int batch_index = 0; batch_index < active_batch; ++batch_index) {
             if (!batch_valid[batch_index]) {
                 continue;
@@ -1220,6 +1263,14 @@ bool run_simulations_impl(
             }
             if (leaf_hash_values[leaf_bucket] >= 0) {
                 const int slot = leaf_hash_values[leaf_bucket];
+                if (
+                    G_UNIQUE_LEAF_BATCHING
+                    && unique_context_indices[slot]
+                        == batch_context_indices[batch_index]
+                ) {
+                    reject_duplicate_request(batch_index);
+                    continue;
+                }
                 eval_slot[batch_index] = slot;
                 unique_request_counts[slot]++;
                 continue;
@@ -1239,6 +1290,7 @@ bool run_simulations_impl(
             if (slot < 0) {
                 slot = unique_count++;
                 unique_keys[slot] = key;
+                unique_context_indices[slot] = batch_context_indices[batch_index];
                 unique_use_pair[slot] = batch_can_use_pair[batch_index];
                 unique_defer_refresh[slot] = 0;
                 unique_request_counts[slot] = 1;
@@ -1254,6 +1306,14 @@ bool run_simulations_impl(
                 }
                 board_hash_values[board_bucket] = slot;
             } else {
+                if (
+                    G_UNIQUE_LEAF_BATCHING
+                    && unique_context_indices[slot]
+                        == batch_context_indices[batch_index]
+                ) {
+                    reject_duplicate_request(batch_index);
+                    continue;
+                }
                 unique_request_counts[slot]++;
                 if (!batch_can_use_pair[batch_index]) {
                     // 同一局面只要有一个请求要求精确刷新，整个去重槽都走完整网络。
@@ -1266,6 +1326,13 @@ bool run_simulations_impl(
             leaf_hash_keys[leaf_bucket] = leaf_identity;
             leaf_hash_values[leaf_bucket] = slot;
             eval_slot[batch_index] = slot;
+        }
+
+        if (G_UNIQUE_LEAF_BATCHING) {
+            valid_count = 0;
+            for (int batch_index = 0; batch_index < active_batch; ++batch_index) {
+                valid_count += batch_valid[batch_index] ? 1 : 0;
+            }
         }
 
         for (int unique_index = 0; unique_index < unique_count; ++unique_index) {
@@ -1724,6 +1791,10 @@ EXPORT void set_mcts_params(int batch_size, int num_threads) {
     omp_set_num_threads(G_NUM_THREADS);
 }
 
+EXPORT void set_mcts_tree_batch_size(int tree_batch_size) {
+    G_TREE_BATCH_SIZE = std::max(tree_batch_size, 0);
+}
+
 EXPORT void set_mcts_search_params(float cpuct, int widening_base, float widening_scale) {
     if (cpuct > 0.0f) {
         G_CPUCT = cpuct;
@@ -1739,6 +1810,11 @@ EXPORT void set_mcts_search_params(float cpuct, int widening_base, float widenin
 EXPORT void set_mcts_selection_mode(int deterministic) {
     G_DETERMINISTIC_TREE_SELECTION = deterministic != 0;
 }
+
+EXPORT void set_mcts_unique_leaf_batching(int enabled) {
+    G_UNIQUE_LEAF_BATCHING = enabled != 0;
+}
+
 
 EXPORT void set_eval_cache_capacity(long long capacity) {
     G_EVAL_CACHE_CAPACITY = capacity > 0 ? static_cast<std::size_t>(capacity) : 0;
@@ -1803,6 +1879,11 @@ EXPORT long long get_total_pair_exact_refreshes() {
 EXPORT long long get_total_pair_eager_exact_evaluations() {
     return G_TOTAL_PAIR_EAGER_EXACT_EVALUATIONS;
 }
+
+EXPORT long long get_total_duplicate_leaf_rejections() {
+    return G_TOTAL_DUPLICATE_LEAF_REJECTIONS;
+}
+
 
 // 旧单棋局 API 保持不变，现有训练循环可以继续使用。
 EXPORT void init_game() {

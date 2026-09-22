@@ -28,6 +28,8 @@ def agent_process(
     widening_base=20,
     widening_scale=0.25,
     deterministic=False,
+    tree_batch_size=0,
+    unique_leaves=False,
 ):
     """每个进程拥有独立的 C++ 树、TensorRT 上下文和 CUDA Graph。"""
 
@@ -42,6 +44,8 @@ def agent_process(
         engine.set_params(batch_size=batch_size, num_threads=threads)
         engine.set_search_params(cpuct, widening_base, widening_scale)
         engine.set_deterministic_selection(deterministic)
+        engine.set_tree_batch_size(tree_batch_size)
+        engine.set_unique_leaf_batching(unique_leaves)
         connection.send(('ready', None))
 
         while True:
@@ -133,8 +137,16 @@ def main():
     parser.add_argument('--widening-scale-b', type=float, default=0.25)
     parser.add_argument('--deterministic-a', action='store_true')
     parser.add_argument('--deterministic-b', action='store_true')
+    parser.add_argument('--tree-batch-size-a', type=int, default=0)
+    parser.add_argument('--tree-batch-size-b', type=int, default=0)
+    parser.add_argument('--unique-leaves-a', action='store_true')
+    parser.add_argument('--unique-leaves-b', action='store_true')
     parser.add_argument('--black-simulations', type=int, default=400)
     parser.add_argument('--white-simulations', type=int, default=1200)
+    parser.add_argument('--black-simulations-a', type=int, default=None)
+    parser.add_argument('--white-simulations-a', type=int, default=None)
+    parser.add_argument('--black-simulations-b', type=int, default=None)
+    parser.add_argument('--white-simulations-b', type=int, default=None)
     parser.add_argument('--opening-stones', type=int, default=5)
     parser.add_argument('--seed', type=int, default=2026)
     args = parser.parse_args()
@@ -159,6 +171,8 @@ def main():
                 args.widening_base_a,
                 args.widening_scale_a,
                 args.deterministic_a,
+                args.tree_batch_size_a,
+                args.unique_leaves_a,
             ),
         ),
         context.Process(
@@ -174,6 +188,8 @@ def main():
                 args.widening_base_b,
                 args.widening_scale_b,
                 args.deterministic_b,
+                args.tree_batch_size_b,
+                args.unique_leaves_b,
             ),
         ),
     ]
@@ -206,8 +222,18 @@ def main():
                 is_a = game.current_player == a_color
                 connection = parent_a if is_a else parent_b
                 label = 'a' if is_a else 'b'
+                if is_a:
+                    black_budget = args.black_simulations_a
+                    white_budget = args.white_simulations_a
+                else:
+                    black_budget = args.black_simulations_b
+                    white_budget = args.white_simulations_b
                 simulations = (
-                    args.black_simulations
+                    black_budget
+                    if game.current_player == 1 and black_budget is not None
+                    else white_budget
+                    if game.current_player == -1 and white_budget is not None
+                    else args.black_simulations
                     if game.current_player == 1
                     else args.white_simulations
                 )

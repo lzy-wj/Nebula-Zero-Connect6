@@ -20,6 +20,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from core.connect6_game import Connect6Game
 from core.mcts import MCTSEngine
+from core.random_opening import build_random_opening
 import config
 from data_refiner import DataRefiner  # Import Refiner
 
@@ -27,6 +28,34 @@ from data_refiner import DataRefiner  # Import Refiner
 def normalize_seed(seed):
     """把任意代号派生的种子限制在 NumPy 和 C++ int 的共同安全范围。"""
     return int(seed) % 2_147_483_647
+
+
+def should_report_progress(completed_games):
+    interval = int(getattr(config, 'SELFPLAY_PROGRESS_INTERVAL', 25))
+    return completed_games == 1 or completed_games % max(1, interval) == 0
+
+
+def apply_worker_affinity(worker_id):
+    specification = os.environ.get('NEBULA_SELFPLAY_CPU_AFFINITY', '')
+    if not specification or not hasattr(os, 'sched_setaffinity'):
+        return None
+    entries = specification.split(';')
+    if worker_id >= len(entries):
+        raise ValueError('NEBULA_SELFPLAY_CPU_AFFINITY 的 CPU 集合少于 worker 数量')
+    cpus = set()
+    for part in entries[worker_id].split(','):
+        part = part.strip()
+        if not part:
+            continue
+        if '-' in part:
+            start, end = (int(value) for value in part.split('-', 1))
+            cpus.update(range(start, end + 1))
+        else:
+            cpus.add(int(part))
+    if not cpus:
+        raise ValueError(f'worker {worker_id} 的 CPU affinity 为空')
+    os.sched_setaffinity(0, cpus)
+    return sorted(cpus)
 
 
 def encode_policy(policy_array):
@@ -41,24 +70,18 @@ def encode_policy(policy_array):
     return ";".join(items)
 
 
-def build_forced_opening(game_seed):
-    """Build a deterministic, legal central opening for a configured game subset."""
+def build_forced_opening(game_seed, game_index=None):
+    """Build a reproducible legal opening without consulting the network."""
 
-    ratio = min(1.0, max(0.0, float(getattr(config, 'FORCED_OPENING_RATIO', 0.0))))
-    stones = max(0, int(getattr(config, 'FORCED_OPENING_STONES', 0)))
-    if ratio <= 0.0 or stones <= 0:
-        return []
-    rng = np.random.default_rng(normalize_seed(game_seed + 7919))
-    if float(rng.random()) >= ratio:
-        return []
-    radius = min(9, max(0, int(getattr(config, 'FORCED_OPENING_RADIUS', 4))))
-    candidates = [
-        row * 19 + column
-        for row in range(9 - radius, 10 + radius)
-        for column in range(9 - radius, 10 + radius)
-    ]
-    count = min(stones, len(candidates))
-    return [int(value) for value in rng.choice(candidates, size=count, replace=False)]
+    return build_random_opening(
+        game_seed=game_seed,
+        game_index=game_index,
+        ratio=getattr(config, 'FORCED_OPENING_RATIO', 0.0),
+        fixed_stones=getattr(config, 'FORCED_OPENING_STONES', 0),
+        stone_choices=getattr(config, 'RANDOM_OPENING_PLIES', ()),
+        radius=getattr(config, 'FORCED_OPENING_RADIUS', 4),
+        uniform_board=getattr(config, 'RANDOM_OPENING_UNIFORM_BOARD', False),
+    )
 
 def worker_process(
     gpu_id,
@@ -75,6 +98,7 @@ def worker_process(
     counter_lock=None,
     total_games=None,
 ):
+    affinity = apply_worker_affinity(worker_id)
     os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
     device = torch.device('cuda:0')
     signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -91,6 +115,8 @@ def worker_process(
         if hasattr(config, 'MCTS_THREADS'):
             print(f"[Worker {worker_id}] Setting MCTS threads: {config.MCTS_THREADS} | Batch: {config.MCTS_BATCH_SIZE}")
             mcts.set_params(batch_size=config.MCTS_BATCH_SIZE, num_threads=config.MCTS_THREADS)
+            mcts.set_tree_batch_size(config.MCTS_TREE_BATCH_SIZE)
+            mcts.set_unique_leaf_batching(config.MCTS_UNIQUE_LEAVES)
             mcts.set_search_params(
                 cpuct=config.MCTS_CPUCT,
                 widening_base=config.MCTS_WIDENING_BASE,
@@ -105,6 +131,9 @@ def worker_process(
         print(f"[Worker {worker_id}] Init Error: {e}")
         raise RuntimeError(f"Worker {worker_id} 初始化失败") from e
 
+    if affinity:
+        print(f"[Worker {worker_id}] CPU affinity: {affinity[0]}-{affinity[-1]}")
+
     mcts_opponent = None
     if opponent_engine_path and os.path.exists(opponent_engine_path):
         try:
@@ -113,6 +142,8 @@ def worker_process(
             # Use same params for opponent? Or weaker? Default to same for now.
             if hasattr(config, 'MCTS_THREADS'):
                 mcts_opponent.set_params(batch_size=config.MCTS_BATCH_SIZE, num_threads=config.MCTS_THREADS)
+                mcts_opponent.set_tree_batch_size(config.MCTS_TREE_BATCH_SIZE)
+                mcts_opponent.set_unique_leaf_batching(config.MCTS_UNIQUE_LEAVES)
                 mcts_opponent.set_search_params(
                     cpuct=config.MCTS_CPUCT,
                     widening_base=config.MCTS_WIDENING_BASE,
@@ -173,6 +204,14 @@ def worker_process(
         game_moves = []
         game_policies = []
         game_bonuses = [] # Store bonus rewards
+        opening = build_forced_opening(game_seed, game_index=game_index)
+        for move_index in opening:
+            game.play(move_index)
+            game_moves.append(game.moves[-1])
+            game_policies.append("")
+            game_bonuses.append("0.00")
+            if not is_asymmetric:
+                mcts.update_state(move_index)
         
         while True:
             stones_to_place = 1 if game.move_count == 0 else 2
@@ -324,10 +363,12 @@ def worker_process(
                 
         completed_games += 1
         display_total = total_games if total_games is not None else games_to_play
-        print(
-            f"[Worker {worker_id}] 全局第 {game_index + 1}/{display_total} 局 "
-            f"Winner: {winner_str}"
-        )
+        if should_report_progress(completed_games):
+            print(
+                f"[Worker {worker_id}] 已完成 {completed_games} 局 | "
+                f"最近全局编号 {game_index + 1}/{display_total} | "
+                f"Winner: {winner_str}"
+            )
 
     elapsed = time.perf_counter() - worker_started_at
     speed = completed_games / elapsed if elapsed > 0 else 0.0
@@ -360,6 +401,7 @@ def batched_worker_process(
 ):
     """单卡单 TensorRT context，同时推进多盘自对弈以填满网络 batch。"""
 
+    affinity = apply_worker_affinity(worker_id)
     os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
     device = torch.device('cuda:0')
     signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -375,6 +417,8 @@ def batched_worker_process(
             batch_size=config.MCTS_BATCH_SIZE,
             num_threads=config.MCTS_THREADS,
         )
+        mcts.set_tree_batch_size(config.MCTS_TREE_BATCH_SIZE)
+        mcts.set_unique_leaf_batching(config.MCTS_UNIQUE_LEAVES)
         mcts.set_search_params(
             cpuct=config.MCTS_CPUCT,
             widening_base=config.MCTS_WIDENING_BASE,
@@ -416,7 +460,7 @@ def batched_worker_process(
         game_seed = normalize_seed(seed + game_index * 1009)
         game = Connect6Game()
         context = mcts.create_game_context(seed=game_seed)
-        opening = build_forced_opening(game_seed)
+        opening = build_forced_opening(game_seed, game_index=game_index)
         for move_index in opening:
             game.play(move_index)
             context.update_state(move_index)
@@ -475,10 +519,12 @@ def batched_worker_process(
         slot['context'].close()
         completed_games += 1
         display_total = total_games if total_games is not None else games_to_play
-        print(
-            f"[Worker {worker_id}] 全局第 {slot['index'] + 1}/{display_total} 局 "
-            f"Winner: {winner} | 活跃棋局: {len(active_slots)}"
-        )
+        if should_report_progress(completed_games):
+            print(
+                f"[Worker {worker_id}] 已完成 {completed_games} 局 | "
+                f"最近全局编号 {slot['index'] + 1}/{display_total} | "
+                f"Winner: {winner} | 活跃棋局: {len(active_slots)}"
+            )
 
     active_slots = []
     for _ in range(concurrent_games):
@@ -490,8 +536,20 @@ def batched_worker_process(
     print(
         f"[Worker {worker_id}] GPU {gpu_id} 启动单 context 多棋局合批："
         f"并发 {len(active_slots)}，MCTS batch {config.MCTS_BATCH_SIZE}，"
+        f"单树 batch {config.MCTS_TREE_BATCH_SIZE or config.MCTS_BATCH_SIZE}，"
+        f"唯一叶子 {config.MCTS_UNIQUE_LEAVES}，"
         f"线程 {config.MCTS_THREADS}，缓存 {getattr(config, 'MCTS_EVAL_CACHE_SIZE', 32768)}，"
         f"随机开局比例 {getattr(config, 'FORCED_OPENING_RATIO', 0.0):.0%}"
+        + (
+            f"，随机前缀 {getattr(config, 'RANDOM_OPENING_PLIES', ())}，全盘均匀"
+            if getattr(config, 'RANDOM_OPENING_UNIFORM_BOARD', False)
+            else ""
+        )
+        + (
+            f"，CPU {affinity[0]}-{affinity[-1]}"
+            if affinity
+            else ""
+        )
     )
 
     while active_slots:
@@ -505,7 +563,11 @@ def batched_worker_process(
             game = slot['game']
             context = slot['context']
             temperature = move_temperature(game)
-            move_index = context.get_mcts_move(simulations=0, temperature=temperature)
+            move_index = context.get_mcts_move(
+                simulations=0,
+                temperature=temperature,
+            )
+            policy = context.get_policy()
             if move_index < 0 or move_index >= 361:
                 raise RuntimeError(
                     f"Worker {worker_id} 第 {slot['index']} 局返回非法落点: {move_index}"
@@ -516,7 +578,7 @@ def batched_worker_process(
                     f"Worker {worker_id} 第 {slot['index']} 局搜索落在已有棋子: {move_index}"
                 )
 
-            slot['policies'].append(encode_policy(context.get_policy()))
+            slot['policies'].append(encode_policy(policy))
             slot['bonuses'].append("0.00")
             game.play(move_index)
             context.update_state(move_index)

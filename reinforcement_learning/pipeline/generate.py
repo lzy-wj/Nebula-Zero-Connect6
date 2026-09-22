@@ -204,6 +204,14 @@ def worker_process(
         game_moves = []
         game_policies = []
         game_bonuses = [] # Store bonus rewards
+        opening = build_forced_opening(game_seed, game_index=game_index)
+        for move_index in opening:
+            game.play(move_index)
+            game_moves.append(game.moves[-1])
+            game_policies.append("")
+            game_bonuses.append("0.00")
+            if not is_asymmetric:
+                mcts.update_state(move_index)
         
         while True:
             stones_to_place = 1 if game.move_count == 0 else 2

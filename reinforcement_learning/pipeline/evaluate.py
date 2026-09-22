@@ -219,6 +219,8 @@ def play_match(
         mcts1.set_params(batch_size=config.MCTS_BATCH_SIZE, num_threads=config.MCTS_THREADS)
         mcts2.set_params(batch_size=config.MCTS_BATCH_SIZE, num_threads=config.MCTS_THREADS)
         for engine in (mcts1, mcts2):
+            engine.set_tree_batch_size(config.MCTS_TREE_BATCH_SIZE)
+            engine.set_unique_leaf_batching(config.MCTS_UNIQUE_LEAVES)
             engine.set_search_params(
                 cpuct=config.MCTS_CPUCT,
                 widening_base=config.MCTS_WIDENING_BASE,

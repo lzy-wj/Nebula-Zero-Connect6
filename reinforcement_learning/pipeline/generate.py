@@ -20,6 +20,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from core.connect6_game import Connect6Game
 from core.mcts import MCTSEngine
+from core.random_opening import build_random_opening
 import config
 from data_refiner import DataRefiner  # Import Refiner
 
@@ -69,24 +70,18 @@ def encode_policy(policy_array):
     return ";".join(items)
 
 
-def build_forced_opening(game_seed):
-    """Build a deterministic, legal central opening for a configured game subset."""
+def build_forced_opening(game_seed, game_index=None):
+    """Build a reproducible legal opening without consulting the network."""
 
-    ratio = min(1.0, max(0.0, float(getattr(config, 'FORCED_OPENING_RATIO', 0.0))))
-    stones = max(0, int(getattr(config, 'FORCED_OPENING_STONES', 0)))
-    if ratio <= 0.0 or stones <= 0:
-        return []
-    rng = np.random.default_rng(normalize_seed(game_seed + 7919))
-    if float(rng.random()) >= ratio:
-        return []
-    radius = min(9, max(0, int(getattr(config, 'FORCED_OPENING_RADIUS', 4))))
-    candidates = [
-        row * 19 + column
-        for row in range(9 - radius, 10 + radius)
-        for column in range(9 - radius, 10 + radius)
-    ]
-    count = min(stones, len(candidates))
-    return [int(value) for value in rng.choice(candidates, size=count, replace=False)]
+    return build_random_opening(
+        game_seed=game_seed,
+        game_index=game_index,
+        ratio=getattr(config, 'FORCED_OPENING_RATIO', 0.0),
+        fixed_stones=getattr(config, 'FORCED_OPENING_STONES', 0),
+        stone_choices=getattr(config, 'RANDOM_OPENING_PLIES', ()),
+        radius=getattr(config, 'FORCED_OPENING_RADIUS', 4),
+        uniform_board=getattr(config, 'RANDOM_OPENING_UNIFORM_BOARD', False),
+    )
 
 def worker_process(
     gpu_id,
@@ -120,6 +115,8 @@ def worker_process(
         if hasattr(config, 'MCTS_THREADS'):
             print(f"[Worker {worker_id}] Setting MCTS threads: {config.MCTS_THREADS} | Batch: {config.MCTS_BATCH_SIZE}")
             mcts.set_params(batch_size=config.MCTS_BATCH_SIZE, num_threads=config.MCTS_THREADS)
+            mcts.set_tree_batch_size(config.MCTS_TREE_BATCH_SIZE)
+            mcts.set_unique_leaf_batching(config.MCTS_UNIQUE_LEAVES)
             mcts.set_search_params(
                 cpuct=config.MCTS_CPUCT,
                 widening_base=config.MCTS_WIDENING_BASE,
@@ -145,6 +142,8 @@ def worker_process(
             # Use same params for opponent? Or weaker? Default to same for now.
             if hasattr(config, 'MCTS_THREADS'):
                 mcts_opponent.set_params(batch_size=config.MCTS_BATCH_SIZE, num_threads=config.MCTS_THREADS)
+                mcts_opponent.set_tree_batch_size(config.MCTS_TREE_BATCH_SIZE)
+                mcts_opponent.set_unique_leaf_batching(config.MCTS_UNIQUE_LEAVES)
                 mcts_opponent.set_search_params(
                     cpuct=config.MCTS_CPUCT,
                     widening_base=config.MCTS_WIDENING_BASE,
@@ -410,6 +409,8 @@ def batched_worker_process(
             batch_size=config.MCTS_BATCH_SIZE,
             num_threads=config.MCTS_THREADS,
         )
+        mcts.set_tree_batch_size(config.MCTS_TREE_BATCH_SIZE)
+        mcts.set_unique_leaf_batching(config.MCTS_UNIQUE_LEAVES)
         mcts.set_search_params(
             cpuct=config.MCTS_CPUCT,
             widening_base=config.MCTS_WIDENING_BASE,
@@ -451,7 +452,7 @@ def batched_worker_process(
         game_seed = normalize_seed(seed + game_index * 1009)
         game = Connect6Game()
         context = mcts.create_game_context(seed=game_seed)
-        opening = build_forced_opening(game_seed)
+        opening = build_forced_opening(game_seed, game_index=game_index)
         for move_index in opening:
             game.play(move_index)
             context.update_state(move_index)
@@ -527,8 +528,15 @@ def batched_worker_process(
     print(
         f"[Worker {worker_id}] GPU {gpu_id} 启动单 context 多棋局合批："
         f"并发 {len(active_slots)}，MCTS batch {config.MCTS_BATCH_SIZE}，"
+        f"单树 batch {config.MCTS_TREE_BATCH_SIZE or config.MCTS_BATCH_SIZE}，"
+        f"唯一叶子 {config.MCTS_UNIQUE_LEAVES}，"
         f"线程 {config.MCTS_THREADS}，缓存 {getattr(config, 'MCTS_EVAL_CACHE_SIZE', 32768)}，"
         f"随机开局比例 {getattr(config, 'FORCED_OPENING_RATIO', 0.0):.0%}"
+        + (
+            f"，随机前缀 {getattr(config, 'RANDOM_OPENING_PLIES', ())}，全盘均匀"
+            if getattr(config, 'RANDOM_OPENING_UNIFORM_BOARD', False)
+            else ""
+        )
         + (
             f"，CPU {affinity[0]}-{affinity[-1]}"
             if affinity
@@ -547,7 +555,11 @@ def batched_worker_process(
             game = slot['game']
             context = slot['context']
             temperature = move_temperature(game)
-            move_index = context.get_mcts_move(simulations=0, temperature=temperature)
+            move_index = context.get_mcts_move(
+                simulations=0,
+                temperature=temperature,
+            )
+            policy = context.get_policy()
             if move_index < 0 or move_index >= 361:
                 raise RuntimeError(
                     f"Worker {worker_id} 第 {slot['index']} 局返回非法落点: {move_index}"
@@ -558,7 +570,7 @@ def batched_worker_process(
                     f"Worker {worker_id} 第 {slot['index']} 局搜索落在已有棋子: {move_index}"
                 )
 
-            slot['policies'].append(encode_policy(context.get_policy()))
+            slot['policies'].append(encode_policy(policy))
             slot['bonuses'].append("0.00")
             game.play(move_index)
             context.update_state(move_index)

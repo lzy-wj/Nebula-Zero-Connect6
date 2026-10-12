@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-114%20passed-brightgreen)](tests)
 [![ModelScope](https://img.shields.io/badge/ModelScope-model%20%2B%20data-blue)](https://modelscope.cn/models/Lazyshu/Nebula_Zero_Connect6)
-[![Hugging Face](https://img.shields.io/badge/Hugging%20Face-model%20%2B%20data-yellow)](https://huggingface.co/liuzhao123/Nebula-Zero-Connect6-Pair)
+[![Hugging Face](https://img.shields.io/badge/Hugging%20Face-model%20%2B%20data-yellow)](https://huggingface.co/Lazyshu/Nebula-Zero-Connect6-Pair)
 [中文](README.md)
 
 An AlphaZero-style Connect6 system trained from random initialization through self-play.
@@ -42,8 +42,8 @@ See the [Pair-native guide](experiments/pair_native/README.md) and the complete
 and replay data in the
 [ModelScope dataset repository](https://modelscope.cn/datasets/Lazyshu/Nebula_Zero_Connect6).
 V3 is mirrored to the Hugging Face
-[model repository](https://huggingface.co/liuzhao123/Nebula-Zero-Connect6-Pair) and
-[dataset repository](https://huggingface.co/datasets/liuzhao123/Nebula-Zero-Connect6-Replay).
+[model repository](https://huggingface.co/Lazyshu/Nebula-Zero-Connect6-Pair) and
+[dataset repository](https://huggingface.co/datasets/Lazyshu/Nebula-Zero-Connect6-Replay).
 See the [V3 release guide](docs/PAIR_NATIVE_V3_RELEASE.md) to reproduce both packages.
 
 ## Three major iterations

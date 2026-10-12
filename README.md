@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-114%20passed-brightgreen)](tests)
 [![ModelScope](https://img.shields.io/badge/ModelScope-model%20%2B%20data-blue)](https://modelscope.cn/models/Lazyshu/Nebula_Zero_Connect6)
-[![Hugging Face](https://img.shields.io/badge/Hugging%20Face-model%20%2B%20data-yellow)](https://huggingface.co/liuzhao123/Nebula-Zero-Connect6-Pair)
+[![Hugging Face](https://img.shields.io/badge/Hugging%20Face-model%20%2B%20data-yellow)](https://huggingface.co/Lazyshu/Nebula-Zero-Connect6-Pair)
 [English](README_en.md)
 
 从随机初始化开始、以自我对弈训练的六子棋 AlphaZero 系统。当前 V3 使用原生无序双落子
@@ -40,8 +40,8 @@ python -m pytest -q
 [ModelScope 模型仓库](https://modelscope.cn/models/Lazyshu/Nebula_Zero_Connect6)，数据放在
 [ModelScope 数据集仓库](https://modelscope.cn/datasets/Lazyshu/Nebula_Zero_Connect6)。
 V3 也同步发布在 Hugging Face 的
-[模型仓库](https://huggingface.co/liuzhao123/Nebula-Zero-Connect6-Pair)和
-[数据集仓库](https://huggingface.co/datasets/liuzhao123/Nebula-Zero-Connect6-Replay)。
+[模型仓库](https://huggingface.co/Lazyshu/Nebula-Zero-Connect6-Pair)和
+[数据集仓库](https://huggingface.co/datasets/Lazyshu/Nebula-Zero-Connect6-Replay)。
 发布包复现流程见 [V3 发布说明](docs/PAIR_NATIVE_V3_RELEASE.md)。
 
 ## 三次主要迭代

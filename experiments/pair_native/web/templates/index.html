@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nebula Zero · 六子棋实验室</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #090c12;
+      --panel: rgba(19, 24, 34, .88);
+      --panel-2: rgba(27, 34, 47, .78);
+      --line: rgba(255, 255, 255, .09);
+      --text: #f1f3f7;
+      --muted: #9da8ba;
+      --cyan: #66e3ff;
+      --violet: #9c86ff;
+      --green: #67e6aa;
+      --red: #ff748e;
+      --gold: #f4c875;
+      --radius: 18px;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 12% 6%, rgba(93, 80, 214, .19), transparent 31rem),
+        radial-gradient(circle at 92% 84%, rgba(29, 179, 192, .13), transparent 34rem),
+        var(--bg);
+    }
+    button, input, select { font: inherit; }
+    button, select, input {
+      color: var(--text);
+      background: #111722;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+    }
+    button { cursor: pointer; transition: .18s ease; }
+    button:hover:not(:disabled) { border-color: rgba(102, 227, 255, .55); transform: translateY(-1px); }
+    button:disabled { cursor: not-allowed; opacity: .45; }
+    .shell { max-width: 1500px; margin: auto; padding: 22px; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
+    .brand { display: flex; align-items: center; gap: 13px; }
+    .mark {
+      width: 45px; height: 45px; display: grid; place-items: center; border-radius: 14px;
+      background: linear-gradient(135deg, var(--violet), var(--cyan)); color: #071018;
+      font-size: 23px; font-weight: 900; box-shadow: 0 10px 35px rgba(102, 227, 255, .18);
+    }
+    h1 { font-size: clamp(20px, 2.2vw, 30px); margin: 0; letter-spacing: -.02em; }
+    .subtitle { color: var(--muted); font-size: 13px; margin-top: 4px; }
+    .live { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 13px var(--green); }
+    .layout { display: grid; grid-template-columns: minmax(520px, 1fr) minmax(360px, 450px); gap: 18px; align-items: start; }
+    .card { border: 1px solid var(--line); background: var(--panel); border-radius: var(--radius); box-shadow: 0 22px 70px rgba(0,0,0,.28); backdrop-filter: blur(18px); }
+    .board-card { padding: 17px; }
+    .board-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 0 2px 13px; }
+    .turn { display: flex; align-items: center; gap: 9px; font-weight: 720; }
+    .stone-mini { width: 18px; height: 18px; border-radius: 50%; border: 1px solid rgba(255,255,255,.18); }
+    .stone-mini.black { background: #111; box-shadow: inset -2px -2px 5px #000, inset 2px 2px 4px #555; }
+    .stone-mini.white { background: #f2f2ed; box-shadow: inset -2px -2px 5px #aaa, inset 2px 2px 4px white; }
+    .turn-sub { font-size: 12px; color: var(--muted); font-weight: 500; }
+    .board-wrap { position: relative; width: 100%; aspect-ratio: 1; border-radius: 13px; overflow: hidden; background: #c99552; box-shadow: inset 0 0 35px rgba(68,34,8,.34); }
+    canvas { display: block; width: 100%; height: 100%; cursor: crosshair; touch-action: manipulation; }
+    .board-mask { display: none; position: absolute; inset: 0; align-items: center; justify-content: center; background: rgba(5,8,12,.52); backdrop-filter: blur(2px); font-weight: 750; letter-spacing: .03em; }
+    .board-mask.visible { display: flex; }
+    .progress { margin-top: 13px; display: none; }
+    .progress.visible { display: block; }
+    .progress-copy { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; margin-bottom: 7px; }
+    .track { height: 7px; overflow: hidden; border-radius: 20px; background: rgba(255,255,255,.08); }
+    .bar { width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--violet), var(--cyan)); transition: width .2s; }
+    .side { display: grid; gap: 14px; }
+    .section { padding: 16px; }
+    .section-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 13px; font-size: 13px; font-weight: 760; letter-spacing: .06em; text-transform: uppercase; color: #d8deea; }
+    .refresh { padding: 5px 9px; font-size: 12px; color: var(--muted); }
+    label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+    select, input[type="number"] { width: 100%; height: 39px; padding: 0 10px; outline: none; }
+    select:focus, input:focus { border-color: rgba(102,227,255,.5); }
+    .model-meta { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; color: var(--muted); font-size: 11px; }
+    .tag { border: 1px solid var(--line); border-radius: 20px; padding: 4px 8px; background: rgba(255,255,255,.035); }
+    .tag.native { color: var(--cyan); }
+    .tag.legacy { color: var(--gold); }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; }
+    .field { min-width: 0; }
+    .presets { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; margin-top: 8px; }
+    .preset { padding: 7px 4px; font-size: 11px; color: var(--muted); }
+    .preset.active { color: #091119; background: linear-gradient(135deg, var(--cyan), #a9f2ff); border-color: transparent; font-weight: 760; }
+    details { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+    summary { cursor: pointer; color: var(--muted); font-size: 12px; user-select: none; }
+    .advanced { margin-top: 11px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .checkline { display: flex; align-items: center; gap: 8px; min-height: 39px; padding: 0 9px; border: 1px solid var(--line); border-radius: 10px; background: #111722; color: var(--muted); font-size: 12px; }
+    .checkline input { accent-color: var(--cyan); }
+    .semantic { margin: 10px 0 0; padding: 9px 10px; border-radius: 9px; background: rgba(102,227,255,.07); color: #b9eefa; font-size: 11px; line-height: 1.55; }
+    .actions { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 13px; }
+    .primary { grid-column: span 2; min-height: 44px; border: 0; color: #071018; font-weight: 850; background: linear-gradient(135deg, var(--cyan), #a8f4df); }
+    .secondary { min-height: 44px; }
+    .small-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
+    .small-actions button { padding: 8px 5px; font-size: 12px; color: var(--muted); }
+    .toggle-row { display: flex; align-items: center; gap: 9px; margin-top: 10px; color: var(--muted); font-size: 12px; }
+    .toggle-row input { accent-color: var(--cyan); }
+    .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .metric { padding: 11px; border-radius: 11px; background: var(--panel-2); border: 1px solid var(--line); }
+    .metric span { display: block; color: var(--muted); font-size: 10px; margin-bottom: 5px; }
+    .metric strong { font-size: 17px; font-variant-numeric: tabular-nums; }
+    .candidate-list, .move-list, .log-list { max-height: 190px; overflow: auto; scrollbar-width: thin; }
+    .candidate { display: grid; grid-template-columns: 24px 1fr auto; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,.055); font-size: 12px; }
+    .rank { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 7px; background: rgba(156,134,255,.13); color: #c8bcff; }
+    .candidate .prob { color: var(--cyan); font-variant-numeric: tabular-nums; }
+    .empty { color: var(--muted); font-size: 12px; padding: 9px 0; }
+    .move-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 5px 11px; }
+    .move-row { display: flex; justify-content: space-between; padding: 5px 7px; border-radius: 7px; background: rgba(255,255,255,.03); font-size: 11px; }
+    .move-row .black { color: #b9c4d6; }
+    .move-row .white { color: white; }
+    .logs { color: var(--muted); font-size: 11px; line-height: 1.65; }
+    .log-error { color: var(--red); }
+    .toast { position: fixed; left: 50%; bottom: 25px; transform: translate(-50%, 20px); opacity: 0; pointer-events: none; padding: 10px 15px; border-radius: 11px; background: #ecf3ff; color: #121722; font-size: 13px; font-weight: 700; transition: .2s; box-shadow: 0 12px 45px rgba(0,0,0,.35); z-index: 20; }
+    .toast.visible { transform: translate(-50%, 0); opacity: 1; }
+    .toast.error { background: #ffdbe2; color: #72172a; }
+    .winner { color: var(--green); }
+    @media (max-width: 1000px) {
+      .layout { grid-template-columns: 1fr; }
+      .side { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 680px) {
+      .shell { padding: 11px; }
+      header { align-items: flex-start; }
+      .live { display: none; }
+      .board-card, .section { padding: 11px; }
+      .layout { display: block; }
+      .side { display: grid; grid-template-columns: 1fr; margin-top: 12px; }
+      .grid3 { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+<main class="shell">
+  <header>
+    <div class="brand">
+      <div class="mark">六</div>
+      <div><h1>Nebula Zero · 对弈实验室</h1><div class="subtitle">Pair-native 与第一代模型统一实战入口</div></div>
+    </div>
+    <div class="live"><a href="/" style="color:var(--cyan);text-decoration:none">自对弈监控</a><span>·</span><span class="dot"></span><span id="server-status">正在连接推理服务</span></div>
+  </header>
+
+  <div class="layout">
+    <section class="card board-card">
+      <div class="board-head">
+        <div class="turn"><span id="turn-stone" class="stone-mini black"></span><span id="turn-text">黑方落子</span></div>
+        <div id="turn-sub" class="turn-sub">首回合 1 子</div>
+      </div>
+      <div class="board-wrap">
+        <canvas id="board" width="800" height="800" aria-label="十九路六子棋棋盘"></canvas>
+        <div id="board-mask" class="board-mask">模型思考中…</div>
+      </div>
+      <div id="progress" class="progress">
+        <div class="progress-copy"><span id="progress-phase">准备模型</span><span id="progress-count">0 / 400</span></div>
+        <div class="track"><div id="progress-bar" class="bar"></div></div>
+      </div>
+    </section>
+
+    <aside class="side">
+      <section class="card section">
+        <div class="section-title"><span>模型与角色</span><button id="refresh-models" class="refresh">刷新模型</button></div>
+        <label for="model">对手模型</label>
+        <select id="model"><option>正在读取模型…</option></select>
+        <div id="model-meta" class="model-meta"></div>
+        <div class="grid2" style="margin-top:12px">
+          <div class="field"><label for="human-side">我执</label><select id="human-side"><option value="1">黑棋</option><option value="-1">白棋</option></select></div>
+          <div class="field"><label for="temperature">落子温度</label><input id="temperature" type="number" value="0" min="0" max="2" step="0.05"></div>
+        </div>
+        <label class="toggle-row"><input id="auto-response" type="checkbox" checked> AI 自动应手</label>
+      </section>
+
+      <section class="card section">
+        <div class="section-title">搜索强度</div>
+        <label for="simulations">MCTS 模拟次数</label>
+        <input id="simulations" type="number" value="400" min="1" max="10000" step="100">
+        <div class="presets">
+          <button class="preset active" data-sims="400">400</button>
+          <button class="preset" data-sims="1200">1200</button>
+          <button class="preset" data-sims="3000">3000</button>
+          <button class="preset" data-sims="10000">10000</button>
+        </div>
+        <div class="grid3" style="margin-top:11px">
+          <div class="field"><label for="top-k">Pair Top-K</label><select id="top-k"><option>16</option><option>32</option><option selected>64</option><option>128</option></select></div>
+          <div class="field"><label for="cpu-threads">CPU 线程</label><input id="cpu-threads" type="number" value="24" min="1" max="24"></div>
+          <div class="field"><label for="batch-size">旧版 Batch</label><input id="batch-size" type="number" value="64" min="1" max="128" step="8"></div>
+        </div>
+        <details>
+          <summary>高级推理参数</summary>
+          <div class="advanced">
+            <div class="field"><label for="cpuct">C-PUCT</label><input id="cpuct" type="number" value="1.5" min="0.1" max="5" step="0.1"></div>
+            <div class="field"><label for="value-scale">Value Scale</label><input id="value-scale" type="number" value="1" min="0" max="2" step="0.1"></div>
+            <div class="field"><label for="root-noise">根噪声 ε</label><input id="root-noise" type="number" value="0" min="0" max="1" step="0.05"></div>
+            <div class="field"><label for="dirichlet">Dirichlet α</label><input id="dirichlet" type="number" value="0.15" min="0.01" max="5" step="0.01"></div>
+            <label class="checkline"><input id="compile-model" type="checkbox"> torch.compile</label>
+            <div class="field"><label for="seed">随机种子</label><input id="seed" type="number" value="20260923" min="0" max="2147483647"></div>
+          </div>
+        </details>
+        <div id="semantic" class="semantic">Pair-native：填写的模拟数用于一整个两子回合。</div>
+        <div class="actions"><button id="ai-move" class="primary">让 AI 落子</button><button id="reset" class="secondary">新对局</button></div>
+        <div class="small-actions"><button id="undo">悔棋</button><button id="export">导出棋谱</button><button id="import">导入棋谱</button></div>
+        <input id="file" type="file" accept="application/json" hidden>
+      </section>
+
+      <section class="card section">
+        <div class="section-title">本次搜索</div>
+        <div class="metrics">
+          <div class="metric"><span>根价值</span><strong id="root-value">--</strong></div>
+          <div class="metric"><span>用时</span><strong id="duration">--</strong></div>
+          <div class="metric"><span>神经评估</span><strong id="evaluations">--</strong></div>
+        </div>
+        <div id="candidate-list" class="candidate-list"><div class="empty">完成一次搜索后显示候选着法</div></div>
+      </section>
+
+      <section class="card section">
+        <div class="section-title"><span>棋谱</span><span id="move-count" style="color:var(--muted);font-weight:500">0 子</span></div>
+        <div id="move-list" class="move-list"><div class="empty">尚未落子</div></div>
+      </section>
+
+      <section class="card section">
+        <div class="section-title">事件</div>
+        <div id="logs" class="log-list logs"></div>
+      </section>
+    </aside>
+  </div>
+</main>
+<div id="toast" class="toast"></div>
+
+<script>
+  "use strict";
+  const SIZE = 19, CANVAS = 800, PAD = 47, GAP = (CANVAS - PAD * 2) / (SIZE - 1);
+  const COLS = "ABCDEFGHJKLMNOPQRST";
+  const $ = id => document.getElementById(id);
+  const ui = {
+    canvas: $("board"), mask: $("board-mask"), turnStone: $("turn-stone"), turnText: $("turn-text"), turnSub: $("turn-sub"),
+    model: $("model"), modelMeta: $("model-meta"), humanSide: $("human-side"), auto: $("auto-response"),
+    simulations: $("simulations"), temperature: $("temperature"), topK: $("top-k"), threads: $("cpu-threads"), batch: $("batch-size"),
+    cpuct: $("cpuct"), valueScale: $("value-scale"), rootNoise: $("root-noise"), dirichlet: $("dirichlet"), compile: $("compile-model"), seed: $("seed"),
+    semantic: $("semantic"), progress: $("progress"), progressPhase: $("progress-phase"), progressCount: $("progress-count"), progressBar: $("progress-bar"),
+    candidates: $("candidate-list"), moveList: $("move-list"), moveCount: $("move-count"), logs: $("logs"), toast: $("toast"), server: $("server-status"),
+    rootValue: $("root-value"), duration: $("duration"), evaluations: $("evaluations")
+  };
+  const ctx = ui.canvas.getContext("2d");
+  let state = {board: Array.from({length: SIZE}, () => Array(SIZE).fill(0)), history_detail: [], current_player: 1, stones_remaining: 1, game_over: false, winner: null};
+  let models = [], busy = false, hover = null, poller = null, autoTimer = null, toastTimer = null;
+
+  function clamp(input, fallback, min, max) {
+    let value = Number(input.value); if (!Number.isFinite(value)) value = fallback;
+    value = Math.max(min, Math.min(max, value)); input.value = value; return value;
+  }
+  function selectedModel() { return models.find(model => model.id === ui.model.value); }
+  function modelKind() { return selectedModel()?.kind || "native_pair"; }
+  function humanSide() { return Number(ui.humanSide.value) === -1 ? -1 : 1; }
+  function coord(row, col) { return COLS[col] + String(SIZE - row); }
+  function playerName(player) { return player === 1 ? "黑方" : player === -1 ? "白方" : "和棋"; }
+  function log(message, error=false) {
+    const line = document.createElement("div"); line.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+    if (error) line.className = "log-error"; ui.logs.prepend(line);
+  }
+  function toast(message, error=false) {
+    clearTimeout(toastTimer); ui.toast.textContent = message; ui.toast.className = "toast visible" + (error ? " error" : "");
+    toastTimer = setTimeout(() => ui.toast.className = "toast", 2600);
+  }
+  async function api(url, options={}) {
+    const response = await fetch(url, options); let data;
+    try { data = await response.json(); } catch (_) { throw new Error(`服务返回 ${response.status}`); }
+    if (!response.ok || data.status === "error") throw new Error(data.message || `请求失败 ${response.status}`);
+    return data;
+  }
+  function settings() {
+    return {
+      model_id: ui.model.value,
+      simulations: clamp(ui.simulations, 400, 1, 10000), temperature: clamp(ui.temperature, 0, 0, 2),
+      top_k: clamp(ui.topK, 64, 1, 128), cpu_threads: clamp(ui.threads, 24, 1, 24), batch_size: clamp(ui.batch, 64, 1, 128),
+      cpuct: clamp(ui.cpuct, 1.5, .1, 5), value_scale: clamp(ui.valueScale, 1, 0, 2), root_noise: clamp(ui.rootNoise, 0, 0, 1),
+      dirichlet_alpha: clamp(ui.dirichlet, .15, .01, 5), compile_model: ui.compile.checked, seed: clamp(ui.seed, 20260923, 0, 2147483647)
+    };
+  }
+  function save() {
+    localStorage.setItem("nebula-pair-web-v1", JSON.stringify({...settings(), human_side: humanSide(), auto: ui.auto.checked}));
+  }
+  function restore() {
+    try {
+      const s = JSON.parse(localStorage.getItem("nebula-pair-web-v1") || "{}");
+      const map = {simulations:ui.simulations, temperature:ui.temperature, top_k:ui.topK, cpu_threads:ui.threads, batch_size:ui.batch, cpuct:ui.cpuct, value_scale:ui.valueScale, root_noise:ui.rootNoise, dirichlet_alpha:ui.dirichlet, seed:ui.seed};
+      Object.entries(map).forEach(([key, element]) => { if (s[key] !== undefined) element.value = s[key]; });
+      if (s.compile_model !== undefined) ui.compile.checked = Boolean(s.compile_model);
+      if (s.human_side !== undefined) ui.humanSide.value = String(s.human_side);
+      if (s.auto !== undefined) ui.auto.checked = Boolean(s.auto);
+      return s.model_id;
+    } catch (_) { return null; }
+  }
+
+  function draw() {
+    const gradient = ctx.createLinearGradient(0, 0, CANVAS, CANVAS);
+    gradient.addColorStop(0, "#e7c68b"); gradient.addColorStop(.55, "#d6a55f"); gradient.addColorStop(1, "#bd8241");
+    ctx.fillStyle = gradient; ctx.fillRect(0, 0, CANVAS, CANVAS);
+    ctx.save(); ctx.globalAlpha = .09; ctx.strokeStyle = "#6f3e18";
+    for (let y=25; y<CANVAS; y+=31) { ctx.beginPath(); ctx.moveTo(0,y); ctx.bezierCurveTo(200,y-5,600,y+6,CANVAS,y-2); ctx.stroke(); }
+    ctx.restore();
+    ctx.strokeStyle = "rgba(56,34,14,.83)"; ctx.lineWidth = 1.15; ctx.beginPath();
+    for (let i=0;i<SIZE;i++) { const p=PAD+i*GAP; ctx.moveTo(PAD,p);ctx.lineTo(CANVAS-PAD,p);ctx.moveTo(p,PAD);ctx.lineTo(p,CANVAS-PAD); } ctx.stroke();
+    ctx.fillStyle = "#5b3517"; [[3,3],[3,9],[3,15],[9,3],[9,9],[9,15],[15,3],[15,9],[15,15]].forEach(([r,c])=>{ctx.beginPath();ctx.arc(PAD+c*GAP,PAD+r*GAP,4,0,Math.PI*2);ctx.fill();});
+    ctx.font = "12px system-ui"; ctx.fillStyle = "rgba(55,31,12,.82)"; ctx.textAlign="center"; ctx.textBaseline="middle";
+    for (let i=0;i<SIZE;i++) { const p=PAD+i*GAP; ctx.fillText(COLS[i],p,20);ctx.fillText(COLS[i],p,CANVAS-19);ctx.fillText(String(SIZE-i),20,p);ctx.fillText(String(SIZE-i),CANVAS-20,p); }
+    if (hover && !busy && !state.game_over && state.board[hover[0]][hover[1]]===0) { ctx.beginPath();ctx.arc(PAD+hover[1]*GAP,PAD+hover[0]*GAP,GAP*.38,0,Math.PI*2);ctx.fillStyle=state.current_player===1?"rgba(10,10,12,.28)":"rgba(255,255,250,.46)";ctx.fill(); }
+    const history = state.history_detail || []; const last = history.length ? history[history.length-1] : null;
+    for (let r=0;r<SIZE;r++) for (let c=0;c<SIZE;c++) if (state.board[r][c]) {
+      const x=PAD+c*GAP,y=PAD+r*GAP,rad=GAP*.42; ctx.save();ctx.shadowColor="rgba(0,0,0,.38)";ctx.shadowBlur=7;ctx.shadowOffsetY=3;
+      const g=ctx.createRadialGradient(x-rad*.3,y-rad*.35,2,x,y,rad); if(state.board[r][c]===1){g.addColorStop(0,"#53565d");g.addColorStop(.34,"#22252b");g.addColorStop(1,"#050608");}else{g.addColorStop(0,"#fff");g.addColorStop(.52,"#f1f0e9");g.addColorStop(1,"#b9b7ae");}
+      ctx.fillStyle=g;ctx.beginPath();ctx.arc(x,y,rad,0,Math.PI*2);ctx.fill();ctx.restore();
+      if(last&&last.row===r&&last.col===c){ctx.strokeStyle=state.board[r][c]===1?"#7df0ff":"#834eff";ctx.lineWidth=3;ctx.beginPath();ctx.arc(x,y,rad*.47,0,Math.PI*2);ctx.stroke();}
+    }
+  }
+  function applyState(data) { state = data; draw(); renderStatus(); renderMoves(); }
+  function renderStatus() {
+    ui.turnStone.className = "stone-mini " + (state.current_player===1?"black":"white");
+    if (state.game_over) { ui.turnText.textContent = state.winner===0 ? "和棋" : `${playerName(state.winner)}获胜`; ui.turnText.className="winner"; ui.turnSub.textContent="本局结束"; }
+    else { ui.turnText.textContent=`${playerName(state.current_player)}落子`;ui.turnText.className="";ui.turnSub.textContent=state.history_detail.length===0?"首回合 1 子":`本回合还需 ${state.stones_remaining} 子`; }
+    ui.mask.classList.toggle("visible", busy); ui.mask.textContent = busy ? "模型思考中…" : "";
+  }
+  function renderMoves() {
+    const moves=state.history_detail||[];ui.moveCount.textContent=`${moves.length} 子`;
+    if(!moves.length){ui.moveList.innerHTML='<div class="empty">尚未落子</div>';return;}
+    ui.moveList.innerHTML=moves.map(m=>`<div class="move-row"><span class="${m.player===1?'black':'white'}">${m.index}. ${m.player===1?'黑':'白'}${m.stone_in_turn}</span><strong>${m.coord}</strong></div>`).join("");
+  }
+  function renderCandidates(items=[]) {
+    if(!items.length){ui.candidates.innerHTML='<div class="empty">没有候选着法</div>';return;}
+    ui.candidates.innerHTML=items.map((item,i)=>`<div class="candidate"><span class="rank">${i+1}</span><strong>${item.coords.join(" + ")}</strong><span class="prob">${(Number(item.probability)*100).toFixed(1)}%</span></div>`).join("");
+  }
+  function setBusy(value){busy=value;renderStatus();$("ai-move").disabled=value||!ui.model.value;$("reset").disabled=value;$("undo").disabled=value;ui.model.disabled=value;}
+  function updateModelUI() {
+    const model=selectedModel();if(!model)return;
+    ui.modelMeta.innerHTML=`<span class="tag ${model.kind==='native_pair'?'native':'legacy'}">${model.kind==='native_pair'?'Pair-native':'第一代 TensorRT'}</span><span class="tag">${model.size_mb} MB</span>${model.accepted?'<span class="tag">已晋级</span>':''}`;
+    const native=model.kind==='native_pair';ui.topK.disabled=!native;ui.valueScale.disabled=!native;ui.rootNoise.disabled=!native;ui.dirichlet.disabled=!native;ui.compile.disabled=!native;ui.batch.disabled=native;
+    ui.semantic.textContent=native?"Pair-native：模拟数用于一个完整两子回合；Top-K 是联合落子候选。":"第一代模型：模拟数会对每颗棋子分别执行；普通回合总计算量约为填写值的 2 倍。";
+    save();
+  }
+  async function loadModels() {
+    const remembered=restore(); const data=await api("/api/models");models=data.models;ui.model.replaceChildren();
+    const groups=new Map();models.forEach(model=>{if(!groups.has(model.group)){const g=document.createElement("optgroup");g.label=model.group;groups.set(model.group,g);ui.model.appendChild(g);}const o=document.createElement("option");o.value=model.id;o.textContent=model.name;groups.get(model.group).appendChild(o);});
+    const choice=models.some(m=>m.id===remembered)?remembered:data.default_id;if(choice)ui.model.value=choice;updateModelUI();ui.server.textContent=`服务在线 · ${models.length} 个模型`;
+  }
+  async function fetchState(){applyState(await api("/api/state"));}
+  function maybeAuto(){clearTimeout(autoTimer);if(!ui.auto.checked||busy||state.game_over||state.current_player===humanSide()||!ui.model.value)return;autoTimer=setTimeout(()=>aiMove(true),260);}
+  async function humanMove(row,col){if(busy||state.game_over||state.board[row][col]!==0)return;if(ui.auto.checked&&state.current_player!==humanSide()){toast("现在轮到 AI");return;}setBusy(true);try{const d=await api("/api/move",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({row,col})});applyState(d);log(`${playerName(d.history_detail[d.history_detail.length-1].player)}落子 ${coord(row,col)}`);if(d.game_over)toast(d.winner===0?"和棋":`${playerName(d.winner)}获胜`);}catch(e){toast(e.message,true);log(e.message,true);await fetchState();}finally{setBusy(false);maybeAuto();}}
+  async function pollProgress(){try{const d=await api("/api/search");const pct=d.total?Math.min(100,d.completed/d.total*100):0;ui.progress.classList.add("visible");ui.progressBar.style.width=`${pct}%`;ui.progressCount.textContent=`${d.completed} / ${d.total}`;ui.progressPhase.textContent=d.phase==="loading"?"加载模型":d.phase==="searching"?`搜索中 · ${d.elapsed.toFixed(1)} 秒`:d.phase==="done"?"搜索完成":"搜索准备";}catch(_){}}
+  async function aiMove(auto=false){if(busy||state.game_over||!ui.model.value)return;setBusy(true);save();ui.progress.classList.add("visible");ui.progressBar.style.width="0";poller=setInterval(pollProgress,250);const s=settings();log(`开始 ${s.simulations} 次 MCTS · ${selectedModel().name}`);try{const d=await api("/api/ai-move",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(s)});applyState(d);ui.rootValue.textContent=Number(d.root_value).toFixed(3);ui.duration.textContent=`${Number(d.duration).toFixed(2)}s`;ui.evaluations.textContent=d.neural_evaluations==null?"TRT":Number(d.neural_evaluations).toLocaleString();renderCandidates(d.candidates);log(`AI 落子 ${d.moves.map(m=>coord(m[0],m[1])).join(" + ")} · ${Number(d.duration).toFixed(2)} 秒`);if(d.game_over)toast(d.winner===0?"和棋":`${playerName(d.winner)}获胜`);}catch(e){toast(e.message,true);log(`AI 搜索失败：${e.message}`,true);await fetchState();}finally{clearInterval(poller);poller=null;await pollProgress();setTimeout(()=>ui.progress.classList.remove("visible"),900);setBusy(false);if(auto)maybeAuto();}}
+  async function reset(){if(state.history_detail.length&&!confirm("确定开始新对局吗？"))return;setBusy(true);try{applyState(await api("/api/reset",{method:"POST"}));ui.rootValue.textContent=ui.duration.textContent=ui.evaluations.textContent="--";renderCandidates([]);log("新对局开始");}catch(e){toast(e.message,true);}finally{setBusy(false);maybeAuto();}}
+  async function undo(){if(busy||!state.history_detail.length)return;setBusy(true);try{const turns=(state.pending||[]).length?1:(ui.auto.checked?2:1);const d=await api("/api/undo",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({turns})});applyState(d);renderCandidates([]);log(`撤销 ${d.removed} 子`);}catch(e){toast(e.message,true);}finally{setBusy(false);}}
+  function exportRecord(){const payload={format:"nebula-connect6",version:1,created_at:new Date().toISOString(),model:selectedModel()?.name,settings:settings(),moves:(state.history_detail||[]).map(m=>({row:m.row,col:m.col,color:m.player===1?"black":"white",coord:m.coord}))};const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`nebula-${Date.now()}.json`;a.click();URL.revokeObjectURL(a.href);}
+  async function importRecord(file){try{const payload=JSON.parse(await file.text());const d=await api("/api/load",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({moves:payload.moves})});applyState(d);log(`导入棋谱 · ${d.history_detail.length} 子`);}catch(e){toast(e.message,true);log(`导入失败：${e.message}`,true);}}
+
+  ui.canvas.addEventListener("mousemove",event=>{const box=ui.canvas.getBoundingClientRect(),x=(event.clientX-box.left)*CANVAS/box.width,y=(event.clientY-box.top)*CANVAS/box.height,c=Math.round((x-PAD)/GAP),r=Math.round((y-PAD)/GAP);hover=(r>=0&&r<SIZE&&c>=0&&c<SIZE)?[r,c]:null;draw();});
+  ui.canvas.addEventListener("mouseleave",()=>{hover=null;draw();});
+  ui.canvas.addEventListener("click",event=>{const box=ui.canvas.getBoundingClientRect(),x=(event.clientX-box.left)*CANVAS/box.width,y=(event.clientY-box.top)*CANVAS/box.height,c=Math.round((x-PAD)/GAP),r=Math.round((y-PAD)/GAP);if(r>=0&&r<SIZE&&c>=0&&c<SIZE)humanMove(r,c);});
+  $("ai-move").onclick=()=>aiMove(false);$("reset").onclick=reset;$("undo").onclick=undo;$("export").onclick=exportRecord;$("import").onclick=()=>$("file").click();$("file").onchange=e=>{if(e.target.files[0])importRecord(e.target.files[0]);e.target.value="";};
+  $("refresh-models").onclick=()=>loadModels().then(()=>toast("模型列表已刷新")).catch(e=>toast(e.message,true));ui.model.onchange=updateModelUI;ui.auto.onchange=()=>{save();maybeAuto();};ui.humanSide.onchange=()=>{save();maybeAuto();};
+  document.querySelectorAll(".preset").forEach(button=>button.onclick=()=>{ui.simulations.value=button.dataset.sims;document.querySelectorAll(".preset").forEach(x=>x.classList.toggle("active",x===button));save();});
+  [ui.simulations,ui.temperature,ui.topK,ui.threads,ui.batch,ui.cpuct,ui.valueScale,ui.rootNoise,ui.dirichlet,ui.compile,ui.seed].forEach(element=>element.addEventListener("change",save));
+  Promise.all([loadModels(),fetchState(),api("/api/health")]).then(([, ,health])=>{log(`推理服务就绪 · ${health.cuda_device||health.device}`);draw();maybeAuto();}).catch(error=>{ui.server.textContent="服务连接失败";toast(error.message,true);log(error.message,true);});
+</script>
+</body>
+</html>

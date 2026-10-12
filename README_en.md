@@ -1,83 +1,101 @@
-# Nebula Zero
+# Nebula Zero Connect6
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Models](https://img.shields.io/badge/ModelScope-models-blue)](https://modelscope.cn/models/Lazyshu/Nebula_Zero_Connect6)
+[![Tests](https://img.shields.io/badge/tests-114%20passed-brightgreen)](tests)
+[![ModelScope](https://img.shields.io/badge/ModelScope-model%20%2B%20data-blue)](https://modelscope.cn/models/Lazyshu/Nebula_Zero_Connect6)
+[![Hugging Face](https://img.shields.io/badge/Hugging%20Face-model%20%2B%20data-yellow)](https://huggingface.co/Lazyshu/Nebula-Zero-Connect6-Pair)
 [中文](README.md)
 
-An AlphaZero-style training and inference system for Connect6. It includes policy-value
-networks, C++ MCTS, TensorRT inference, self-play training, candidate gating, and desktop
-and web clients.
+An AlphaZero-style Connect6 system trained from random initialization through self-play.
+The current V3 combines a native unordered-pair policy, a sparse network, C++ MCTS, and
+an asynchronous multi-GPU pipeline.
 
 > Champion of the first Beijing Collegiate “AI+” Innovation Contest, Connect6 track.
 
-## Design
+## Current: V3 Pair-native
 
-A Connect6 turn places two stones, giving a direct action space of roughly `361 × 360`.
-Nebula Zero factorizes the policy as
+A Connect6 turn normally places two stones. V3 searches and learns an unordered `(a, b)`
+action directly instead of splitting one turn into two independent decisions.
 
-\[
-P(a_1,a_2\mid s)=P(a_1\mid s)P(a_2\mid s,a_1)
-\]
-
-and also includes an experimental native pair-policy head.
-
-| Layer | Implementation |
+| Item | V3 configuration |
 | --- | --- |
-| Network | C6TransNet, 2D relative attention, policy and value heads |
-| Search | C++17 MCTS, OpenMP, progressive widening, leaf deduplication |
-| Inference | TensorRT FP16, fused board encoding, CUDA Graphs, pinned buffers |
-| Training | supervised warm start, self-play, replay, paired gating, recovery |
-| Applications | PyQt5 client, Flask arena, historical-model tournaments |
+| Network | 1,651,035 parameters; sparse-token trunk and symmetric pair head |
+| Search | native-pair C++ MCTS, Top-64, 400–1200 simulations per complete turn |
+| Training | random initialization, self-play, Parquet replay, gating, asynchronous multi-GPU |
+| Released data | exact 12-generation promotion window: 29,568 games and 1,713,854 turn samples |
 
-## Setup
-
-Recommended: Linux/WSL2, Python 3.10+, NVIDIA GPU, g++, and OpenMP. PyTorch and
-TensorRT must match the local CUDA installation.
+Internal promotion scores are gating evidence, not a public rating or a claim of tournament
+strength. Model, data, and search settings are released together for reproducibility.
 
 ```bash
 git clone https://github.com/lzy-wj/Nebula-Zero-Connect6.git
 cd Nebula-Zero-Connect6
 pip install -r requirements.txt
-pip install -r requirements-dev.txt     # development only
 
-python reinforcement_learning/core/compile_mcts.py
+python experiments/pair_native/compile_pair_mcts.py
 python -m pytest -q
-python scripts_smoke_env.py             # requires CUDA/TensorRT
 ```
 
-Weights are hosted on [ModelScope](https://modelscope.cn/models/Lazyshu/Nebula_Zero_Connect6).
-TensorRT engines are tied to the GPU architecture and TensorRT version; build them on the
-target machine:
+See the [Pair-native guide](experiments/pair_native/README.md) and the complete
+[results log](experiments/pair_native/RESULTS.md). Weights are hosted in the
+[ModelScope model repository](https://modelscope.cn/models/Lazyshu/Nebula_Zero_Connect6),
+and replay data in the
+[ModelScope dataset repository](https://modelscope.cn/datasets/Lazyshu/Nebula_Zero_Connect6).
+V3 is mirrored to the Hugging Face
+[model repository](https://huggingface.co/Lazyshu/Nebula-Zero-Connect6-Pair) and
+[dataset repository](https://huggingface.co/datasets/Lazyshu/Nebula-Zero-Connect6-Replay).
+See the [V3 release guide](docs/PAIR_NATIVE_V3_RELEASE.md) to reproduce both packages.
 
-```bash
-cd reinforcement_learning
-python pipeline/export_onnx.py checkpoints/best.pth checkpoints/model.onnx
-python pipeline/build_engine.py checkpoints/model.onnx checkpoints/model.engine
-```
+## Three major iterations
 
-## Entry points
+<details open>
+<summary><b>V3 · Pair-native sparse (current)</b></summary>
 
-| Task | Entry point | Notes |
-| --- | --- | --- |
-| Supervised pretraining | `python supervised_learning/train.py` | [docs](supervised_learning/README.md) |
-| Reinforcement learning | `python reinforcement_learning/run_forever.py` | [docs](reinforcement_learning/README.md) |
-| Pair policy | `python experiments/pair_policy/run_loop.py` | [docs](experiments/pair_policy/README.md) |
-| Architecture research | `python experiments/nebula_v3/train.py` | [docs](experiments/nebula_v3/README.md) |
-| Benchmarks | `python benchmarks/benchmark_mcts.py ...` | [docs](benchmarks/README.md) |
-| Desktop client | `python local/main.py` | [docs](local/README.md) |
-| Web arena | `python Competition/web/app.py` | [docs](Competition/README.md) |
+- A native joint two-stone policy and MCTS avoid per-stone semantic mismatch.
+- A 1.65M-parameter sparse model targets self-play throughput rather than model scale alone.
+- 400–1200 simulation schedules, color/opening monitoring, and strict replay audits.
+- Asynchronous 1/2/4/8-GPU profiles keep actors running while training and evaluation use
+  their assigned devices.
 
-## Repository policy
+</details>
 
-Source, tests, and build scripts are versioned. Weights, ONNX files, TensorRT engines,
-self-play data, replay buffers, logs, and machine-specific launch configuration are not.
-Performance results should report the model, search budget, batch size, CPU threads, GPU,
-and software versions.
+<details>
+<summary><b>V2 · Inference-first</b></summary>
+
+- Systematic TensorRT, batching, CUDA Graph, parallel-MCTS, and network-candidate studies.
+- Candidate networks improved inference throughput, but their match gates remained near even;
+  this iteration is retained as engineering research rather than a strength upgrade.
+- Its performance measurement and gating methods became the foundation of V3.
+
+</details>
+
+<details>
+<summary><b>V1 · Competition</b></summary>
+
+- An 11.8M-parameter C6TransNet with an autoregressive per-stone policy and C++ MCTS.
+- Supervised pretraining, self-play, TensorRT inference, desktop, and Web clients.
+- Historical weights and games remain available as the compatibility baseline and contest build.
+
+</details>
+
+## Main entry points
+
+| Task | Command/directory |
+| --- | --- |
+| V3 self-play and training | `python -m experiments.pair_native.async_loop ...` |
+| V3 Web arena and monitor | `bash experiments/pair_native/run_web.sh` |
+| V3 model release package | `python -m experiments.pair_native.export_release ...` |
+| V3 replay release package | `python -m experiments.pair_native.prepare_public_dataset ...` |
+| V1 reinforcement learning | `reinforcement_learning/` |
+| Desktop client | `local/` |
+
+Git tracks source, tests, and build scripts—not weights, replay, logs, or TensorRT engines.
+TensorRT engines are hardware/software specific and should be rebuilt on the target machine.
 
 ## Team
 
 Liu Zhaoyang (reinforcement learning and algorithms), Chen Tao (desktop client), Gong Feixue
-(architecture research), and Hu Zihan (human game data). Thanks to ShaohonChen, the School
-of Mathematics at BUPT, SwanLab, DeepMind AlphaZero, and ModelScope.
+(architecture research and support), and Hu Zihan (human game data). Thanks to ShaohonChen,
+the School of Mathematics at BUPT, SwanLab, DeepMind AlphaZero, and ModelScope.
 
 MIT License.

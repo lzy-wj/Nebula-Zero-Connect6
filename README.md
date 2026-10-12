@@ -1,87 +1,92 @@
-# Nebula Zero
+# Nebula Zero Connect6
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Models](https://img.shields.io/badge/ModelScope-models-blue)](https://modelscope.cn/models/Lazyshu/Nebula_Zero_Connect6)
+[![Tests](https://img.shields.io/badge/tests-114%20passed-brightgreen)](tests)
+[![ModelScope](https://img.shields.io/badge/ModelScope-model%20%2B%20data-blue)](https://modelscope.cn/models/Lazyshu/Nebula_Zero_Connect6)
+[![Hugging Face](https://img.shields.io/badge/Hugging%20Face-model%20%2B%20data-yellow)](https://huggingface.co/Lazyshu/Nebula-Zero-Connect6-Pair)
 [English](README_en.md)
 
-面向六子棋的 AlphaZero 风格训练与推理系统。项目包含策略价值网络、C++ MCTS、
-TensorRT 推理、自我对弈训练、候选门禁，以及本地和 Web 对弈客户端。
+从随机初始化开始、以自我对弈训练的六子棋 AlphaZero 系统。当前 V3 使用原生无序双落子
+策略、稀疏网络、C++ MCTS 和异步多 GPU 流水线。
 
 > 首届北京市大学生「人工智能+」创新大赛六子棋赛道冠军项目。
 
-## 设计
+## 当前版本：V3 Pair-native
 
-六子棋每回合落两子，直接策略空间约为 `361 × 360`。Nebula Zero 使用自回归分解
+六子棋一回合通常落两子。V3 直接把 `(a, b)` 作为一个无序动作搜索和训练，不再把一回合
+拆成两次独立决策。
 
-\[
-P(a_1,a_2\mid s)=P(a_1\mid s)P(a_2\mid s,a_1)
-\]
-
-并提供原生双落子条件头实验。主要工程路径如下：
-
-| 层 | 实现 |
+| 项目 | V3 配置 |
 | --- | --- |
-| 网络 | C6TransNet、二维相对位置注意力、策略/价值头 |
-| 搜索 | C++17 MCTS、OpenMP、渐进展开、批内局面去重 |
-| 推理 | TensorRT FP16、融合棋盘编码、CUDA Graph、页锁定缓冲 |
-| 训练 | 监督预训练、自我对弈、replay、配对门禁、断点恢复 |
-| 应用 | PyQt5 客户端、Flask Web 对战、历史模型循环赛 |
+| 网络 | 1,651,035 参数，稀疏 token trunk + 对称 pair head |
+| 搜索 | 原生双落子 C++ MCTS，Top-64，生产预算 400–1200 次/完整回合 |
+| 训练 | 随机初始化、自我对弈、Parquet replay、候选门禁、异步多 GPU |
+| 发布数据 | 晋级模型实际使用的 12 代 replay：29,568 局、1,713,854 个回合样本 |
 
-## 安装
-
-推荐 Linux/WSL2、Python 3.10+、NVIDIA GPU、g++ 与 OpenMP。PyTorch 和
-TensorRT 必须与本机 CUDA 匹配。
+内部晋级分数只用于版本门禁，不等同于公开等级分或比赛棋力。模型、数据和搜索预算会配套
+发布，确保结果可复核。
 
 ```bash
 git clone https://github.com/lzy-wj/Nebula-Zero-Connect6.git
 cd Nebula-Zero-Connect6
 pip install -r requirements.txt
-pip install -r requirements-dev.txt     # 开发环境
 
-python reinforcement_learning/core/compile_mcts.py
+python experiments/pair_native/compile_pair_mcts.py
 python -m pytest -q
-python scripts_smoke_env.py             # 需要 CUDA/TensorRT
 ```
 
-模型权重可从 [ModelScope](https://modelscope.cn/models/Lazyshu/Nebula_Zero_Connect6)
-下载。TensorRT engine 与 GPU 架构及 TensorRT 版本绑定，应在目标机器上构建：
+详细使用、训练和 Web 对弈说明见 [Pair-native 文档](experiments/pair_native/README.md)，
+完整实验记录见 [RESULTS](experiments/pair_native/RESULTS.md)。权重放在
+[ModelScope 模型仓库](https://modelscope.cn/models/Lazyshu/Nebula_Zero_Connect6)，数据放在
+[ModelScope 数据集仓库](https://modelscope.cn/datasets/Lazyshu/Nebula_Zero_Connect6)。
+V3 也同步发布在 Hugging Face 的
+[模型仓库](https://huggingface.co/Lazyshu/Nebula-Zero-Connect6-Pair)和
+[数据集仓库](https://huggingface.co/datasets/Lazyshu/Nebula-Zero-Connect6-Replay)。
+发布包复现流程见 [V3 发布说明](docs/PAIR_NATIVE_V3_RELEASE.md)。
 
-```bash
-cd reinforcement_learning
-python pipeline/export_onnx.py checkpoints/best.pth checkpoints/model.onnx
-python pipeline/build_engine.py checkpoints/model.onnx checkpoints/model.engine
-```
+## 三次主要迭代
 
-## 入口
+<details open>
+<summary><b>V3 · Pair-native sparse（当前）</b></summary>
 
-| 任务 | 入口 | 文档 |
-| --- | --- | --- |
-| 监督预训练 | `python supervised_learning/train.py` | [说明](supervised_learning/README.md) |
-| 强化学习 | `python reinforcement_learning/run_forever.py` | [说明](reinforcement_learning/README.md) |
-| 双落子实验 | `python experiments/pair_policy/run_loop.py` | [说明](experiments/pair_policy/README.md) |
-| 网络结构实验 | `python experiments/nebula_v3/train.py` | [说明](experiments/nebula_v3/README.md) |
-| 性能基准 | `python benchmarks/benchmark_mcts.py ...` | [说明](benchmarks/README.md) |
-| 本地客户端 | `python local/main.py` | [说明](local/README.md) |
-| Web 对战 | `python Competition/web/app.py` | [说明](Competition/README.md) |
+- 原生联合双落子策略与 MCTS，避免逐子动作的语义错位。
+- 1.65M 参数稀疏模型，面向高吞吐自我对弈，而非单纯扩大网络。
+- 400–1200 次动态搜索、颜色与开局监控、严格 replay 审计。
+- 支持 1/2/4/8 GPU 异步布局；训练、评测期间其余 GPU 可继续产出数据。
 
-核心目录：
+</details>
 
-```text
-supervised_learning/       监督预训练
-reinforcement_learning/    生产训练、搜索与推理
-experiments/               隔离的模型与策略实验
-benchmarks/                固定预算性能基准
-tests/                     单元与轻量集成测试
-Competition/               Web 对战
-local/                     桌面客户端
-final/                     模型循环赛
-```
+<details>
+<summary><b>V2 · Inference-first</b></summary>
 
-## 仓库边界
+- 系统化测试 TensorRT、batch、CUDA Graph、并行 MCTS 和候选网络。
+- 候选网络显著提高推理吞吐，但对局门禁约为五五开，因此作为工程研究保留，未宣称棋力升级。
+- 这一阶段建立的性能测量和门禁方法成为 V3 异步流水线基础。
 
-源码、测试和构建脚本纳入版本控制；权重、ONNX、TensorRT engine、棋谱、replay、
-日志与机器专用启动配置不纳入。性能结论应同时报告模型、搜索预算、batch、线程数、
-GPU 和软件版本。
+</details>
+
+<details>
+<summary><b>V1 · Competition</b></summary>
+
+- 11.8M 参数 C6TransNet，自回归逐子策略与 C++ MCTS。
+- 包含监督预训练、自我对弈、TensorRT 推理、桌面端和 Web 端。
+- 历史权重与棋谱继续保留，作为兼容基线与项目比赛版本。
+
+</details>
+
+## 主要入口
+
+| 任务 | 命令/目录 |
+| --- | --- |
+| V3 自我对弈与训练 | `python -m experiments.pair_native.async_loop ...` |
+| V3 Web 对弈与训练监控 | `bash experiments/pair_native/run_web.sh` |
+| V3 模型发布包 | `python -m experiments.pair_native.export_release ...` |
+| V3 数据发布包 | `python -m experiments.pair_native.prepare_public_dataset ...` |
+| V1 强化学习 | `reinforcement_learning/` |
+| 桌面客户端 | `local/` |
+
+源码、测试和构建脚本进入 Git；权重、replay、日志和 TensorRT engine 不进入 Git 历史。
+TensorRT engine 与硬件和软件版本绑定，应在目标机器上重新构建。
 
 ## 团队
 

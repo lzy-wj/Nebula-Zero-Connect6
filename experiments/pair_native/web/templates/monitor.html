@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nebula Zero · 自对弈监控</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg:#0a0d13; --card:#121720; --card2:#171d28; --line:rgba(255,255,255,.085);
+      --text:#edf1f7; --muted:#929daf; --cyan:#64def7; --blue:#6d91ff; --violet:#a78bfa;
+      --green:#5de0a0; --yellow:#f5c66f; --red:#ff7189; --orange:#f29463;
+      font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    }
+    *{box-sizing:border-box} body{margin:0;color:var(--text);background:radial-gradient(circle at 8% 0,rgba(76,75,180,.15),transparent 32rem),var(--bg)}
+    button,select{font:inherit;color:inherit;background:#111722;border:1px solid var(--line);border-radius:9px}
+    a{color:inherit;text-decoration:none}.shell{max-width:1550px;margin:auto;padding:20px}
+    header{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:17px}.brand{display:flex;align-items:center;gap:12px}
+    .mark{width:42px;height:42px;display:grid;place-items:center;border-radius:13px;background:linear-gradient(135deg,var(--violet),var(--cyan));color:#071018;font-weight:900;font-size:21px}
+    h1{font-size:24px;margin:0;letter-spacing:-.02em}.sub{font-size:12px;color:var(--muted);margin-top:3px}
+    nav{display:flex;padding:4px;background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:11px}nav a{padding:7px 12px;border-radius:8px;font-size:12px;color:var(--muted)}nav a.active{background:#202838;color:var(--text)}
+    .toolbar{display:flex;align-items:center;gap:10px;padding:12px 14px;margin-bottom:13px;border:1px solid var(--line);background:rgba(18,23,32,.86);border-radius:14px}
+    .toolbar label{font-size:11px;color:var(--muted)}select{height:35px;padding:0 9px;min-width:300px}.spacer{flex:1}.live{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:11px}.dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 10px var(--green)}
+    .refresh{height:35px;padding:0 12px;cursor:pointer}.auto{display:flex;gap:6px;align-items:center;font-size:11px;color:var(--muted)}.auto input{accent-color:var(--cyan)}
+    .kpis{display:grid;grid-template-columns:repeat(7,1fr);gap:10px;margin-bottom:13px}.card{background:rgba(18,23,32,.9);border:1px solid var(--line);border-radius:14px;box-shadow:0 18px 55px rgba(0,0,0,.18)}
+    .kpi{padding:13px}.kpi .label{font-size:10px;color:var(--muted);margin-bottom:8px}.kpi strong{font-size:21px;display:block;font-variant-numeric:tabular-nums}.kpi .detail{font-size:10px;color:var(--muted);margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.good{color:var(--green)!important}.warn{color:var(--yellow)!important}.bad{color:var(--red)!important}.cyan{color:var(--cyan)!important}
+    .alerts{display:grid;gap:7px;margin-bottom:13px}.alert{display:grid;grid-template-columns:7px 170px 1fr;align-items:center;gap:10px;padding:9px 12px;border:1px solid var(--line);border-radius:11px;background:rgba(18,23,32,.75);font-size:11px}.alert i{width:7px;height:7px;border-radius:50%;background:var(--green)}.alert.warning i{background:var(--yellow)}.alert.critical i{background:var(--red);box-shadow:0 0 10px rgba(255,113,137,.6)}.alert.info i{background:var(--cyan)}.alert b{font-size:11px}.alert span{color:var(--muted)}
+    .charts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px;margin-bottom:13px}.chart-card{padding:13px}.head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:7px}.title{font-size:12px;font-weight:760}.hint{font-size:10px;color:var(--muted)}canvas{display:block;width:100%;height:220px}
+    .legend{display:flex;gap:13px;flex-wrap:wrap;margin-top:6px;color:var(--muted);font-size:10px}.legend span{display:flex;align-items:center;gap:5px}.legend i{display:inline-block;width:9px;height:3px;border-radius:2px}
+    .split{display:grid;grid-template-columns:1fr 1fr;gap:11px;margin-bottom:13px}.section{padding:14px;min-width:0}.section .head{margin-bottom:12px}
+    .dist{display:grid;gap:9px}.dist-row{display:grid;grid-template-columns:55px 1fr;gap:10px;align-items:center}.dist-name{font-size:10px;color:var(--muted)}.bar-group{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}.bar-box{position:relative;height:28px;background:#0d1118;border:1px solid var(--line);border-radius:7px;overflow:hidden}.bar-fill{position:absolute;left:0;top:0;bottom:0;background:rgba(100,222,247,.24)}.bar-fill.sampled{background:rgba(93,224,160,.28)}.bar-fill.target{background:rgba(167,139,250,.25)}.bar-box span{position:relative;z-index:1;display:flex;height:100%;align-items:center;padding:0 6px;font-size:9px;white-space:nowrap}.dist-labels{display:grid;grid-template-columns:55px repeat(3,1fr);gap:5px;color:var(--muted);font-size:9px;text-align:center}
+    .train-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.mini{padding:10px;background:var(--card2);border:1px solid var(--line);border-radius:9px}.mini span{display:block;color:var(--muted);font-size:9px;margin-bottom:5px}.mini strong{font-size:14px;font-variant-numeric:tabular-nums}.mini small{display:block;margin-top:4px;color:var(--muted);font-size:9px}
+    .tables{display:grid;grid-template-columns:1.45fr 1fr;gap:11px;margin-bottom:13px}.table-card{padding:13px;min-width:0;overflow:hidden}.table-wrap{overflow:auto;max-height:390px}table{width:100%;border-collapse:collapse;font-size:10px;font-variant-numeric:tabular-nums}th{position:sticky;top:0;background:var(--card);z-index:1;color:var(--muted);font-weight:600;text-align:right;padding:7px 6px;border-bottom:1px solid var(--line);white-space:nowrap}th:first-child,td:first-child{text-align:left}td{text-align:right;padding:7px 6px;border-bottom:1px solid rgba(255,255,255,.045);white-space:nowrap}tr:hover td{background:rgba(255,255,255,.025)}.badge{display:inline-block;border-radius:10px;padding:2px 6px;background:rgba(255,255,255,.06);color:var(--muted)}.badge.pass{background:rgba(93,224,160,.13);color:var(--green)}.badge.fail{color:#c3cad5}.audit-ok{color:var(--green)}
+    details.config{padding:13px;margin-bottom:20px}summary{cursor:pointer;font-size:11px;color:var(--muted)}.config-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:7px;margin-top:12px}.config-item{padding:8px;background:var(--card2);border-radius:7px;min-width:0}.config-item span{display:block;font-size:8px;color:var(--muted);overflow:hidden;text-overflow:ellipsis}.config-item b{display:block;font-size:10px;margin-top:3px;overflow:hidden;text-overflow:ellipsis}
+    .toast{position:fixed;left:50%;bottom:22px;transform:translate(-50%,15px);opacity:0;padding:9px 13px;border-radius:9px;background:#edf5ff;color:#10151e;font-size:11px;font-weight:700;transition:.2s;pointer-events:none}.toast.show{opacity:1;transform:translate(-50%,0)}
+    @media(max-width:1100px){.kpis{grid-template-columns:repeat(3,1fr)}.config-grid{grid-template-columns:repeat(3,1fr)}}
+    @media(max-width:760px){.shell{padding:10px}header{align-items:flex-start}.toolbar{flex-wrap:wrap}select{min-width:0;width:100%}.spacer{display:none}.kpis{grid-template-columns:repeat(2,1fr)}.charts,.split,.tables{grid-template-columns:1fr}.alert{grid-template-columns:7px 115px 1fr}canvas{height:190px}.config-grid{grid-template-columns:repeat(2,1fr)}}
+  </style>
+</head>
+<body>
+<main class="shell">
+  <header>
+    <div class="brand"><div class="mark">数</div><div><h1>自对弈数据监控</h1><div class="sub">每代数据、训练分布与晋级质量实时追踪</div></div></div>
+    <nav><a class="active" href="/">数据监控</a><a href="/play">人机对弈</a></nav>
+  </header>
+
+  <section class="toolbar">
+    <label for="run">训练任务</label><select id="run"></select>
+    <button id="refresh" class="refresh">立即刷新</button>
+    <label class="auto"><input id="auto" type="checkbox" checked> 每 10 秒刷新</label>
+    <div class="spacer"></div><div class="live"><i class="dot"></i><span id="updated">读取中</span></div>
+  </section>
+
+  <section class="kpis">
+    <div class="card kpi"><div class="label">训练进度</div><strong id="progress">--</strong><div id="eta" class="detail">--</div></div>
+    <div class="card kpi"><div class="label">累计有效棋局</div><strong id="games">--</strong><div id="audit" class="detail">--</div></div>
+    <div class="card kpi"><div class="label">最近三代黑 : 白</div><strong id="color">--</strong><div id="color-detail" class="detail">目标 45–55%</div></div>
+    <div class="card kpi"><div class="label">平均每局子数</div><strong id="stones">--</strong><div id="stones-detail" class="detail">--</div></div>
+    <div class="card kpi"><div class="label">最新吞吐</div><strong id="speed">--</strong><div id="speed-detail" class="detail">--</div></div>
+    <div class="card kpi"><div class="label">当前模拟预算</div><strong id="budgets">--</strong><div id="budget-detail" class="detail">--</div></div>
+    <div class="card kpi"><div class="label">首手集中度</div><strong id="opening-share">--</strong><div id="opening-detail" class="detail">--</div></div>
+  </section>
+
+  <section id="alerts" class="alerts"></section>
+
+  <section class="charts">
+    <div class="card chart-card"><div class="head"><span class="title">黑方决定局胜率</span><span class="hint">阴影为 45–55% 目标带</span></div><canvas id="color-chart"></canvas><div class="legend"><span><i style="background:var(--cyan)"></i>单代</span><span><i style="background:var(--violet)"></i>三代滚动</span></div></div>
+    <div class="card chart-card"><div class="head"><span class="title">平均局长</span><span class="hint">单位：棋子</span></div><canvas id="stones-chart"></canvas><div class="legend"><span><i style="background:var(--green)"></i>每局棋子数</span></div></div>
+    <div class="card chart-card"><div class="head"><span class="title">局长分布</span><span class="hint">短≤40 / 中≤80 / 长≤140 / 超长&gt;140</span></div><canvas id="length-chart"></canvas><div class="legend"><span><i style="background:#65d7f1"></i>短</span><span><i style="background:#6489f5"></i>中</span><span><i style="background:#a387ee"></i>长</span><span><i style="background:#ef9566"></i>超长</span></div></div>
+    <div class="card chart-card"><div class="head"><span class="title">自对弈吞吐</span><span class="hint">局/秒</span></div><canvas id="speed-chart"></canvas><div class="legend"><span><i style="background:var(--yellow)"></i>Games/s</span></div></div>
+    <div class="card chart-card"><div class="head"><span class="title">黑白模拟预算</span><span class="hint">动态颜色补偿</span></div><canvas id="budget-chart"></canvas><div class="legend"><span><i style="background:#727986"></i>黑方</span><span><i style="background:#f1f2ee"></i>白方</span></div></div>
+    <div class="card chart-card"><div class="head"><span class="title">候选 Gate</span><span class="hint">下界超过 50% 才晋级</span></div><canvas id="gate-chart"></canvas><div class="legend"><span><i style="background:var(--cyan)"></i>得分</span><span><i style="background:var(--violet)"></i>95% 下界</span></div></div>
+    <div class="card chart-card"><div class="head"><span class="title">自然开局与完整棋局多样性</span><span class="hint">首手集中度应低，唯一局率应高</span></div><canvas id="opening-chart"></canvas><div class="legend"><span><i style="background:var(--red)"></i>首手 Top-1</span><span><i style="background:var(--green)"></i>完整棋局唯一率</span></div></div>
+  </section>
+
+  <section class="split">
+    <div class="card section"><div class="head"><span class="title">最新训练采样分布</span><span id="sampling-round" class="hint">--</span></div><div class="dist-labels"><span></span><span>源数据</span><span>实际采样</span><span>目标</span></div><div id="length-dist" class="dist"></div><div style="height:12px"></div><div class="dist-labels"><span></span><span>源数据</span><span>实际采样</span><span>目标</span></div><div id="winner-dist" class="dist"></div></div>
+    <div class="card section"><div class="head"><span class="title">最新候选训练质量</span><span id="train-round" class="hint">--</span></div><div id="train-metrics" class="train-metrics"></div></div>
+  </section>
+
+  <section class="tables">
+    <div class="card table-card"><div class="head"><span class="title">最近自对弈代</span><span class="hint">原始 replay 指标</span></div><div class="table-wrap"><table><thead><tr><th>Gen</th><th>黑/白/和</th><th>黑胜率</th><th>平均子</th><th>短/中/长/超长</th><th>预算 B/W</th><th>开局Top / 唯一局</th><th>局/s</th><th>审计</th></tr></thead><tbody id="round-table"></tbody></table></div></div>
+    <div class="card table-card"><div class="head"><span class="title">最近晋级评测</span><span id="promotion-summary" class="hint">--</span></div><div class="table-wrap"><table><thead><tr><th>候选</th><th>得分</th><th>95%下界</th><th>耗时</th><th>结果</th></tr></thead><tbody id="gate-table"></tbody></table></div></div>
+  </section>
+
+  <details class="card config"><summary>查看本次运行配置</summary><div id="config" class="config-grid"></div></details>
+</main>
+<div id="toast" class="toast"></div>
+
+<script>
+"use strict";
+const $=id=>document.getElementById(id);let snapshot=null,timer=null,loading=false;
+const colors={cyan:"#64def7",violet:"#a78bfa",green:"#5de0a0",yellow:"#f5c66f",gray:"#727986",white:"#f1f2ee",red:"#ff7189",length:["#65d7f1","#6489f5","#a387ee","#ef9566"]};
+async function api(url){const r=await fetch(url);let d;try{d=await r.json()}catch(_){throw new Error(`HTTP ${r.status}`)}if(!r.ok||d.status==="error")throw new Error(d.message||`HTTP ${r.status}`);return d}
+function pct(v,d=1){return Number.isFinite(Number(v))?`${(Number(v)*100).toFixed(d)}%`:"--"}function num(v,d=0){return Number.isFinite(Number(v))?Number(v).toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d}):"--"}
+function duration(s){s=Math.max(0,Number(s)||0);if(s<60)return`${s.toFixed(0)}秒`;if(s<3600)return`${(s/60).toFixed(1)}分钟`;return`${(s/3600).toFixed(1)}小时`}
+function moveCoord(move){if(!Number.isFinite(Number(move)))return"--";const cols="ABCDEFGHJKLMNOPQRST",m=Number(move),r=Math.floor(m/19),c=m%19;return`${cols[c]}${19-r}`}
+function toast(message){const el=$("toast");el.textContent=message;el.classList.add("show");setTimeout(()=>el.classList.remove("show"),2200)}
+async function loadRuns(){const d=await api("/api/runs"),select=$("run"),remembered=localStorage.getItem("nebula-monitor-run");select.replaceChildren();d.runs.forEach(run=>{const o=document.createElement("option");o.value=run.id;o.textContent=`${run.status==="running"?"● ":""}${run.name} · ${run.completed}/${run.target}`;select.appendChild(o)});select.value=d.runs.some(r=>r.id===remembered)?remembered:d.default_id||""}
+async function refresh(){if(loading||!$("run").value)return;loading=true;try{const d=await api(`/api/training?run_id=${encodeURIComponent($("run").value)}`);snapshot=d;render(d)}catch(e){toast(e.message);$("updated").textContent=`读取失败 · ${e.message}`}finally{loading=false}}
+function render(d){const r=d.run,c=d.cumulative,rounds=d.rounds,last=rounds.at(-1),recent=rounds.slice(-3),rb=recent.reduce((s,x)=>s+x.black,0),rw=recent.reduce((s,x)=>s+x.white,0),rr=rb/(rb+rw||1),recentStones=recent.reduce((s,x)=>s+x.stones,0)/Math.max(1,recent.reduce((s,x)=>s+x.games,0));
+  $("progress").textContent=`${r.completed} / ${r.target}`;$("eta").textContent=`${pct(r.completed/Math.max(r.target,1),0)} · 预计还需 ${duration(r.eta_seconds)}`;
+  $("games").textContent=num(c.games);$("audit").textContent=c.invalid_audits?`${c.invalid_audits} 个 shard 失败`:`全部 shard 审计通过`;$("audit").className=`detail ${c.invalid_audits?"bad":"good"}`;
+  $("color").textContent=`${pct(rr)} : ${pct(1-rr)}`;$("color").className=rr>=.45&&rr<=.55?"good":rr>=.4&&rr<=.6?"warn":"bad";$("color-detail").textContent=`累计 ${pct(c.black_decisive)} : ${pct(c.white_decisive)} · 和棋 ${pct(c.draw_rate)}`;
+  $("stones").textContent=num(c.mean_stones,1);$("stones-detail").textContent=`最近三代 ${num(recentStones,1)} 子/局`;
+  $("speed").textContent=last?`${num(last.games_per_second,2)} 局/s`:"--";$("speed-detail").textContent=`全程均值 ${num(c.mean_games_per_second,2)} 局/s`;
+  $("budgets").textContent=last?`${last.black_simulations} / ${last.white_simulations}`:"--";$("budget-detail").textContent=last&&last.boosted_color!=="none"?`正在补偿${last.boosted_color==="white"?"白方":"黑方"}`:"当前无需颜色补偿";
+  $("opening-share").textContent=last&&last.opening_top_share!=null?pct(last.opening_top_share):"--";$("opening-share").className=last&&last.opening_top_share>.75?"bad":last&&last.opening_top_share>.4?"warn":"good";$("opening-detail").textContent=last?`${moveCoord(last.opening_top_move)} · 温度 ${num(last.opening_temperature,2)} · 唯一局 ${pct(last.unique_complete_game_rate)}`:"--";
+  $("updated").textContent=`${r.status} · ${new Date(r.updated_unix*1000).toLocaleTimeString()} 更新 · accepted ${r.accepted_sha||"--"}`;
+  renderAlerts(d.alerts);renderCharts(d);renderTraining(d.latest_training);renderTables(d);renderConfig(d.config);
+}
+function renderAlerts(alerts){$("alerts").innerHTML=alerts.map(a=>`<div class="alert ${a.level}"><i></i><b>${a.title}</b><span>${a.detail}</span></div>`).join("")}
+function prep(canvas){const box=canvas.getBoundingClientRect(),dpr=devicePixelRatio||1;canvas.width=Math.max(1,box.width*dpr);canvas.height=Math.max(1,box.height*dpr);const x=canvas.getContext("2d");x.setTransform(dpr,0,0,dpr,0,0);return{x,w:box.width,h:box.height,p:{l:38,r:12,t:12,b:24}}}
+function lineChart(id,labels,series,opts={}){const {x,w,h,p}=prep($(id)),pw=w-p.l-p.r,ph=h-p.t-p.b,values=series.flatMap(s=>s.values).filter(Number.isFinite);let min=opts.min??Math.min(...values,0),max=opts.max??Math.max(...values,1);if(max<=min)max=min+1;const X=i=>p.l+(labels.length<=1?.5:i/(labels.length-1))*pw,Y=v=>p.t+(max-v)/(max-min)*ph;
+  x.clearRect(0,0,w,h);if(opts.band){x.fillStyle="rgba(93,224,160,.075)";x.fillRect(p.l,Y(opts.band[1]),pw,Y(opts.band[0])-Y(opts.band[1]))}x.strokeStyle="rgba(255,255,255,.075)";x.fillStyle="#788397";x.font="9px system-ui";x.textAlign="right";x.textBaseline="middle";
+  for(let i=0;i<=4;i++){const v=min+(max-min)*i/4,yy=Y(v);x.beginPath();x.moveTo(p.l,yy);x.lineTo(w-p.r,yy);x.stroke();x.fillText(opts.percent?`${(v*100).toFixed(0)}%`:v.toFixed(opts.decimals??1),p.l-5,yy)}
+  series.forEach(s=>{x.strokeStyle=s.color;x.lineWidth=s.width||2;x.beginPath();let begun=false;s.values.forEach((v,i)=>{if(!Number.isFinite(v))return;begun?(x.lineTo(X(i),Y(v))):(x.moveTo(X(i),Y(v)),begun=true)});x.stroke()});x.fillStyle="#788397";x.textAlign="center";x.textBaseline="top";const step=Math.max(1,Math.ceil(labels.length/6));labels.forEach((v,i)=>{if(i%step===0||i===labels.length-1)x.fillText(v,X(i),h-p.b+6)})}
+function stackedChart(id,rounds){const {x,w,h,p}=prep($(id)),data=rounds.slice(-60),pw=w-p.l-p.r,ph=h-p.t-p.b,bar=pw/Math.max(data.length,1);x.clearRect(0,0,w,h);x.strokeStyle="rgba(255,255,255,.075)";x.fillStyle="#788397";x.font="9px system-ui";for(let i=0;i<=4;i++){const y=p.t+ph*(1-i/4);x.beginPath();x.moveTo(p.l,y);x.lineTo(w-p.r,y);x.stroke();x.textAlign="right";x.fillText(`${i*25}%`,p.l-5,y+3)}data.forEach((r,i)=>{let base=p.t+ph;["short","medium","long","very_long"].forEach((k,j)=>{const hh=r.length_rate[k]*ph;base-=hh;x.fillStyle=colors.length[j];x.fillRect(p.l+i*bar+.5,base,Math.max(1,bar-.8),hh)})});x.fillStyle="#788397";x.textAlign="center";const step=Math.max(1,Math.ceil(data.length/6));data.forEach((r,i)=>{if(i%step===0||i===data.length-1)x.fillText(r.generation,p.l+(i+.5)*bar,h-p.b+12)})}
+function renderCharts(d){const rounds=d.rounds.slice(-80),labels=rounds.map(x=>x.generation);lineChart("color-chart",labels,[{values:rounds.map(x=>x.black_decisive),color:colors.cyan,width:1.4},{values:rounds.map(x=>x.rolling_black_decisive),color:colors.violet,width:2.3}],{min:.35,max:.65,percent:true,band:[.45,.55]});lineChart("stones-chart",labels,[{values:rounds.map(x=>x.mean_stones),color:colors.green}],{min:0});stackedChart("length-chart",rounds);lineChart("speed-chart",labels,[{values:rounds.map(x=>x.games_per_second),color:colors.yellow}],{min:0});lineChart("budget-chart",labels,[{values:rounds.map(x=>x.black_simulations),color:colors.gray},{values:rounds.map(x=>x.white_simulations),color:colors.white}],{min:0,decimals:0});const gates=d.promotions.slice(-80),gl=gates.map(x=>x.through_round);lineChart("gate-chart",gl,[{values:gates.map(x=>x.score),color:colors.cyan},{values:gates.map(x=>x.lower_bound),color:colors.violet}],{min:.15,max:.8,percent:true,band:[.5,.505]});lineChart("opening-chart",labels,[{values:rounds.map(x=>x.opening_top_share),color:colors.red},{values:rounds.map(x=>x.unique_complete_game_rate),color:colors.green}],{min:0,max:1,percent:true,band:[0,.4]})}
+function distRows(container,names,source=[],sampled=[],target=[]){$(container).innerHTML=names.map((name,i)=>`<div class="dist-row"><span class="dist-name">${name}</span><div class="bar-group">${[[source[i],""],[sampled[i],"sampled"],[target[i],"target"]].map(([v,c])=>`<div class="bar-box"><div class="bar-fill ${c}" style="width:${Math.min(100,(Number(v)||0)*100)}%"></div><span>${pct(v)}</span></div>`).join("")}</div></div>`).join("")}
+function metric(name,initial,final,invert=false){const delta=Number(final)-Number(initial),good=invert?delta<0:delta>0;return`<div class="mini"><span>${name}</span><strong>${num(final,3)}</strong><small class="${Math.abs(delta)<1e-9?"":good?"good":"warn"}">${delta>=0?"+":""}${num(delta,3)} vs 训练前</small></div>`}
+function renderTraining(t){if(!t){$("train-metrics").innerHTML='<div class="hint">暂无训练记录</div>';return}$("sampling-round").textContent=`through-${t.through_round}`;$("train-round").textContent=`through-${t.through_round} · ${t.promoted?"已晋级":"未晋级"}`;const s=t.sampling||{};distRows("length-dist",["短","中","长","超长"],s.length_source,s.length_sampled,s.length_target);distRows("winner-dist",["黑胜","白胜","和棋"],s.winner_source,s.winner_sampled,s.winner_target);const a=t.initial_validation||{},f=t.final_validation||{},ess=(s.effective_sample_size||0)/Math.max(s.rows||1,1);$("train-metrics").innerHTML=metric("Validation loss",a.loss,f.loss,true)+metric("Policy Top-1",a.policy_top1,f.policy_top1)+metric("Value MAE",a.value_mae,f.value_mae,true)+metric("Value 符号准确率",a.value_decisive_sign_accuracy,f.value_decisive_sign_accuracy)+`<div class="mini"><span>有效样本率 ESS</span><strong>${pct(ess)}</strong><small>${num(s.effective_sample_size)} / ${num(s.rows)}</small></div><div class="mini"><span>最大/最小权重</span><strong>${num(s.maximum_to_minimum_weight_ratio,2)}×</strong><small>安全上限 4×</small></div>`}
+function renderTables(d){$("round-table").innerHTML=d.rounds.slice(-15).reverse().map(r=>`<tr><td>${r.generation}</td><td>${r.black}/${r.white}/${r.draw}</td><td class="${r.rolling_black_decisive<.45||r.rolling_black_decisive>.55?"warn":""}">${pct(r.black_decisive)}</td><td>${num(r.mean_stones,1)}</td><td>${["short","medium","long","very_long"].map(k=>pct(r.length_rate[k],0)).join(" / ")}</td><td>${r.black_simulations}/${r.white_simulations}</td><td class="${r.opening_top_share>.75?"bad":r.opening_top_share>.4?"warn":""}">${pct(r.opening_top_share)} / ${pct(r.unique_complete_game_rate)}</td><td>${num(r.games_per_second,2)}</td><td class="${r.invalid_audits?"bad":"audit-ok"}">${r.invalid_audits?"失败":"通过"}</td></tr>`).join("");const promoted=d.promotions.filter(x=>x.promoted).length;$("promotion-summary").textContent=`${promoted}/${d.promotions.length} 次晋级 · 当前 accepted ${d.run.accepted_sha}`;$("gate-table").innerHTML=d.promotions.slice(-15).reverse().map(g=>`<tr><td>through-${g.through_round}</td><td>${pct(g.score)}</td><td class="${g.lower_bound>=g.required_lower_bound?"good":""}">${pct(g.lower_bound)}</td><td>${duration(g.seconds)}</td><td><span class="badge ${g.promoted?"pass":"fail"}">${g.promoted?"晋级":"拒绝"}</span></td></tr>`).join("")}
+function renderConfig(config){$("config").innerHTML=Object.entries(config).map(([k,v])=>`<div class="config-item"><span>${k}</span><b title="${String(v)}">${String(v)}</b></div>`).join("")}
+$("refresh").onclick=refresh;$("run").onchange=()=>{localStorage.setItem("nebula-monitor-run",$("run").value);refresh()};$("auto").onchange=()=>{clearInterval(timer);if($("auto").checked)timer=setInterval(refresh,10000)};window.addEventListener("resize",()=>{if(snapshot)renderCharts(snapshot)});
+loadRuns().then(refresh).then(()=>{timer=setInterval(()=>{if($("auto").checked)refresh()},10000)}).catch(e=>toast(e.message));
+</script>
+</body>
+</html>

@@ -6,26 +6,66 @@
 [![Hugging Face](https://img.shields.io/badge/Hugging%20Face-model%20%2B%20data-yellow)](https://huggingface.co/Lazyshu/Nebula-Zero-Connect6-Pair)
 [中文](README.md)
 
-An AlphaZero-style Connect6 system trained from random initialization through self-play.
-The current V3 combines a native unordered-pair policy, a sparse network, C++ MCTS, and
-an asynchronous multi-GPU pipeline.
+Nebula Zero is an AlphaZero-style Connect6 project. V1 won the Connect6 track of the first
+Beijing Collegiate “AI+” Innovation Contest. The current V3 starts from random weights and
+trains directly through self-play.
 
-> Champion of the first Beijing Collegiate “AI+” Innovation Contest, Connect6 track.
+## Three iterations
 
-## Current: V3 Pair-native
+| Version | Main change | Measured result |
+| --- | --- | --- |
+| V1 · Competition | 11.80M-parameter C6TransNet, per-stone policy, C++ MCTS | Contest build and later experimental baseline; the public training record reaches generation 801 |
+| V2 · Inference-first | TensorRT, batching, CUDA Graphs, and candidate-network work | 2.16× faster inference and about 1.89× faster two-GPU self-play; the 1200-simulation gate was 49–51, so it was not promoted |
+| V3 · Pair-native | Native unordered pairs, 1.65M sparse network, Top-64 MCTS, asynchronous multi-GPU | 86.0% fewer parameters than V1; 77.34% paired score against V1 `best` at 400 simulations |
+
+V2 improved speed but did not demonstrate higher playing strength. V3 did not inherit its
+weights; it restarted in a native Pair action space. The strength comparison is therefore
+V1 to V3.
+
+## V3 versus V1
+
+The `through-88` milestone used 64 common openings with color reversal, for 128 games:
+
+| V1 opponent | V3 per-turn / V1 per-stone simulations | V3 W-L-D | V3 score (paired 95% interval) |
+| --- | ---: | ---: | ---: |
+| `best` | 400 / 400 | 98-28-2 | 77.34% (71.30–83.39%) |
+| `best` | 1200 / 1200 | 96-30-2 | 75.78% (68.63–82.93%) |
+
+V1 searches once for each of the two stones in a normal turn, so equal nominal budgets give
+it about twice V3's simulation count. The public model is the later `through-452` snapshot;
+see [RESULTS](experiments/pair_native/RESULTS.md#final-100-round-model-versus-historical-baselines)
+for the complete match results.
+
+## Training scale
+
+- V1: the public training record reaches generation 801; complete historical training time was not archived.
+- V2: 13,200 games on two A800s in about 18.5 minutes; complete fine-tuning time was not archived.
+- V3: the continuation segment containing `through-452` generated 1,133,440 games, including
+  seven quality retries. Active actor, learner, and gate phases totaled 110.5 hours and at
+  least 464.4 GPU-hours after weighting by the actual GPU count.
+
+The public V3 replay is the exact 12-generation window consumed by the model: 29,568 games
+and 1,713,854 turn samples. See the [evidence record](docs/THREE_GENERATION_EVIDENCE.md) for
+the aggregation rules.
+
+## Current V3
 
 A Connect6 turn normally places two stones. V3 searches and learns an unordered `(a, b)`
-action directly instead of splitting one turn into two independent decisions.
+action directly instead of splitting a turn into two independent decisions.
 
-| Item | V3 configuration |
+| Item | Configuration |
 | --- | --- |
 | Network | 1,651,035 parameters; sparse-token trunk and symmetric pair head |
-| Search | native-pair C++ MCTS, Top-64, 400–1200 simulations per complete turn |
-| Training | random initialization, self-play, Parquet replay, gating, asynchronous multi-GPU |
-| Released data | exact 12-generation promotion window: 29,568 games and 1,713,854 turn samples |
+| Search | native-pair C++ MCTS; Top-64; 400–1200 simulations per complete turn |
+| Training | random initialization; Parquet replay; candidate gating; asynchronous 1/2/4/8-GPU profiles |
+| Release | `through-452` model, exact replay window, configs, manifests, and SHA256 files |
 
-Internal promotion scores are gating evidence, not a public rating or a claim of tournament
-strength. Model, data, and search settings are released together for reproducibility.
+In the controlled 64-simulation engineering benchmark, stored-turn throughput rose from
+425.8 turns/s on the early four-GPU implementation to 1,145.5 turns/s after optimization;
+the six-GPU result was 1,644.0 turns/s. Production training uses 400–1200 simulations, so its
+speed is not directly comparable to this benchmark.
+
+## Quick start
 
 ```bash
 git clone https://github.com/lzy-wj/Nebula-Zero-Connect6.git
@@ -36,61 +76,29 @@ python experiments/pair_native/compile_pair_mcts.py
 python -m pytest -q
 ```
 
-See the [Pair-native guide](experiments/pair_native/README.md) and the complete
-[results log](experiments/pair_native/RESULTS.md). Weights are hosted in the
-[ModelScope model repository](https://modelscope.cn/models/Lazyshu/Nebula_Zero_Connect6),
-and replay data in the
-[ModelScope dataset repository](https://modelscope.cn/datasets/Lazyshu/Nebula_Zero_Connect6).
-V3 is mirrored to the Hugging Face
-[model repository](https://huggingface.co/Lazyshu/Nebula-Zero-Connect6-Pair) and
-[dataset repository](https://huggingface.co/datasets/Lazyshu/Nebula-Zero-Connect6-Replay).
-See the [V3 release guide](docs/PAIR_NATIVE_V3_RELEASE.md) to reproduce both packages.
+See the [Pair-native guide](experiments/pair_native/README.md) and the
+[V3 release guide](docs/PAIR_NATIVE_V3_RELEASE.md).
 
-## Three major iterations
+Models: [ModelScope](https://modelscope.cn/models/Lazyshu/Nebula_Zero_Connect6) ·
+[Hugging Face](https://huggingface.co/Lazyshu/Nebula-Zero-Connect6-Pair)
 
-<details open>
-<summary><b>V3 · Pair-native sparse (current)</b></summary>
-
-- A native joint two-stone policy and MCTS avoid per-stone semantic mismatch.
-- A 1.65M-parameter sparse model targets self-play throughput rather than model scale alone.
-- 400–1200 simulation schedules, color/opening monitoring, and strict replay audits.
-- Asynchronous 1/2/4/8-GPU profiles keep actors running while training and evaluation use
-  their assigned devices.
-
-</details>
-
-<details>
-<summary><b>V2 · Inference-first</b></summary>
-
-- Systematic TensorRT, batching, CUDA Graph, parallel-MCTS, and network-candidate studies.
-- Candidate networks improved inference throughput, but their match gates remained near even;
-  this iteration is retained as engineering research rather than a strength upgrade.
-- Its performance measurement and gating methods became the foundation of V3.
-
-</details>
-
-<details>
-<summary><b>V1 · Competition</b></summary>
-
-- An 11.8M-parameter C6TransNet with an autoregressive per-stone policy and C++ MCTS.
-- Supervised pretraining, self-play, TensorRT inference, desktop, and Web clients.
-- Historical weights and games remain available as the compatibility baseline and contest build.
-
-</details>
+Data: [ModelScope](https://modelscope.cn/datasets/Lazyshu/Nebula_Zero_Connect6) ·
+[Hugging Face](https://huggingface.co/datasets/Lazyshu/Nebula-Zero-Connect6-Replay)
 
 ## Main entry points
 
 | Task | Command/directory |
 | --- | --- |
 | V3 self-play and training | `python -m experiments.pair_native.async_loop ...` |
-| V3 Web arena and monitor | `bash experiments/pair_native/run_web.sh` |
-| V3 model release package | `python -m experiments.pair_native.export_release ...` |
-| V3 replay release package | `python -m experiments.pair_native.prepare_public_dataset ...` |
+| Web arena and monitor | `bash experiments/pair_native/run_web.sh` |
+| Model release package | `python -m experiments.pair_native.export_release ...` |
+| Replay release package | `python -m experiments.pair_native.prepare_public_dataset ...` |
 | V1 reinforcement learning | `reinforcement_learning/` |
 | Desktop client | `local/` |
 
-Git tracks source, tests, and build scripts—not weights, replay, logs, or TensorRT engines.
-TensorRT engines are hardware/software specific and should be rebuilt on the target machine.
+Weights, replay, logs, and TensorRT engines are not tracked by Git. Rebuild TensorRT engines
+on the target machine. Match scores apply only to the listed checkpoints, search budgets,
+and opening protocol; they are not a public Elo rating.
 
 ## Team
 

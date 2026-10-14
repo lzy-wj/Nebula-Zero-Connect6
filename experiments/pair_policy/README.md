@@ -83,4 +83,4 @@ python reinforcement_learning/pipeline/build_engine.py \
   /tmp/pair.onnx /tmp/pair.engine
 ```
 
-历史实验结果保存在 [RESULTS.md](RESULTS.md)。
+实验输出由每个 run 自己保存，不随源码仓库发布。

@@ -1,4 +1,4 @@
-"""End-to-end H20 callback + C++ turn-level MCTS benchmark."""
+"""End-to-end evaluator callback + C++ turn-level MCTS benchmark."""
 
 from __future__ import annotations
 

@@ -9,7 +9,7 @@
 python benchmarks/benchmark_mcts.py \
   --engine reinforcement_learning/checkpoints/current_model.engine \
   --simulations 12000 --batch-size 64 --threads 5 \
-  --processes 2 --gpus 6,7 --warmup-simulations 512 --repeats 5
+  --processes "$PROCESS_COUNT" --gpus "$GPU_IDS" --warmup-simulations 512 --repeats 5
 ```
 
 主要观察 `median_search_seconds` 和 `steady_simulations_per_second`。
@@ -22,7 +22,7 @@ python benchmarks/benchmark_mcts.py \
 ```bash
 python benchmarks/compare_mcts_configs.py \
   --engine reinforcement_learning/checkpoints/current_model.engine \
-  --gpu 6 --games 20 \
+  --gpu "$GPU_ID" --games 20 \
   --threads-a 5 --threads-b 24 \
   --batch-size-a 64 --batch-size-b 64 \
   --black-simulations 400 --white-simulations 1200
@@ -31,7 +31,7 @@ python benchmarks/compare_mcts_configs.py \
 ## TensorRT batch 曲线
 
 ```bash
-CUDA_VISIBLE_DEVICES=6 python benchmarks/benchmark_tensorrt_engine.py \
+python benchmarks/benchmark_tensorrt_engine.py \
   --engine reinforcement_learning/checkpoints/current_model.engine \
   --batches 16,32,64
 ```
@@ -42,7 +42,7 @@ CUDA_VISIBLE_DEVICES=6 python benchmarks/benchmark_tensorrt_engine.py \
 ## 实验性相对位置注意力
 
 ```bash
-CUDA_VISIBLE_DEVICES=6 python benchmarks/benchmark_relative_attention.py \
+python benchmarks/benchmark_relative_attention.py \
   --batch-size 64 --rounds 200
 ```
 
@@ -53,7 +53,7 @@ CUDA_VISIBLE_DEVICES=6 python benchmarks/benchmark_relative_attention.py \
 
 ```bash
 python benchmarks/benchmark_training.py \
-  --gpus 6,7 --batch-size 386 --warmup 2 --rounds 5
+  --gpus "$GPU_IDS" --batch-size "$BATCH_SIZE" --warmup 2 --rounds 5
 ```
 
 脚本只执行随机数据上的前向、反向、梯度裁剪和 fused AdamW，不读取或修改训练

@@ -55,7 +55,6 @@ class AIWorker(QThread):
         
         self.pondering_enabled = False
         self.simulations = 12000  # 默认 12000
-        # Increased default batch size to 32 for RTX 4060
         # Force single thread for deterministic behavior (OpenMP scheduling noise avoidance)
         self.params = {'batch': 32, 'threads': 8}
         

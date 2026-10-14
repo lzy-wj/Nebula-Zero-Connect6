@@ -79,11 +79,11 @@ def parse_args():
     default_data = os.path.abspath(
         os.path.join(PROJECT_ROOT, '..', 'datasets', 'selfplay_data_v1', 'selfplay_data')
     )
-    default_output = os.path.join(SCRIPT_DIR, 'output', 'network_v3_pretrain_a800')
-    parser = argparse.ArgumentParser(description='NebulaNet V3 双卡预训练')
+    default_output = os.path.join(SCRIPT_DIR, 'output', 'network_v3_pretrain')
+    parser = argparse.ArgumentParser(description='NebulaNet V3 分布式预训练')
     parser.add_argument('--data-root', default=os.environ.get('NEBULA_V3_DATA', default_data))
     parser.add_argument('--output-dir', default=default_output)
-    parser.add_argument('--run-name', default='network_v3_pretrain_a800')
+    parser.add_argument('--run-name', default='network_v3_pretrain')
     parser.add_argument('--project', default='Nebula-zero-one')
     parser.add_argument(
         '--swanlab-mode',

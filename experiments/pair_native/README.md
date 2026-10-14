@@ -18,8 +18,8 @@ stone for legacy models.
 ./experiments/pair_native/run_web.sh
 ```
 
-The defaults bind the private loopback address `127.0.0.1:18473` and expose
-physical GPU 0 as `cuda:0`. Override these with `NEBULA_PAIR_WEB_GPU`,
+The defaults bind the private loopback address `127.0.0.1:18473` and use
+`cuda:0`. Override these with `NEBULA_PAIR_WEB_GPU`,
 `NEBULA_PAIR_WEB_PORT`, and optionally `NEBULA_PAIR_WEB_CPUSET`. Checkpoints are
 discovered below `artifacts/pair_native` and `artifacts/legacy`; use
 `NEBULA_PAIR_WEB_TRAINING_ROOT` and `NEBULA_PAIR_WEB_LEGACY_ROOT` to select other
@@ -50,21 +50,21 @@ auditing and value targets, but they do **not** contain the joint unordered-pair
 visit distribution required by a native pair policy. New self-play must store
 that distribution directly.
 
-## H20 PyTorch prototype benchmark
+## PyTorch prototype benchmark
 
 The benchmark includes the sparse trunk, all 361 point queries, the complete
 unordered pair score matrix, legality masking, GPU Top-K, and optionally the
 small result copy to CPU.
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python -m experiments.pair_native.benchmark \
+python -m experiments.pair_native.benchmark \
   --batches 1,8,16,32,64,128 \
   --copy-outputs
 ```
 
 This is a PyTorch architecture screen, not a TensorRT production result.
 
-Measured screening results are recorded in [RESULTS.md](RESULTS.md).
+Measure throughput again on the target deployment environment.
 
 ## Native Pair replay contract
 
@@ -110,13 +110,12 @@ python -m experiments.pair_native.legacy_provenance \
   --engine /path/to/model_gen_800.engine \
   --onnx /path/to/model_gen_800.onnx
 
-CUDA_VISIBLE_DEVICES=0 NEBULA_CUDA_GRAPH=0 \
-python -m experiments.pair_native.legacy_arena \
+NEBULA_CUDA_GRAPH=0 python -m experiments.pair_native.legacy_arena \
   --native-checkpoint /path/to/native-best.pth \
   --legacy-checkpoint /path/to/model_gen_800.pth \
   --legacy-engine /path/to/model_gen_800.engine \
   --pairs 64 --native-simulations 400 --legacy-simulations 400 \
-  --top-k 64 --opening-radius 4 --cpu-affinity 0-23 \
+  --top-k 64 --opening-radius 4 --cpu-affinity "$CPU_AFFINITY" \
   --output /path/to/result.json
 ```
 
@@ -126,15 +125,14 @@ limited seed-to-seed variation without turning the arena into high-temperature
 self-play:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 NEBULA_CUDA_GRAPH=0 \
-python -m experiments.pair_native.legacy_arena \
+NEBULA_CUDA_GRAPH=0 python -m experiments.pair_native.legacy_arena \
   --native-checkpoint /path/to/native-best.pth \
   --legacy-checkpoint /path/to/legacy-best.pth \
   --legacy-engine /path/to/legacy-best.engine \
   --pairs 8 --native-simulations 1200 --legacy-simulations 1200 \
   --top-k 64 --opening-mode natural \
   --early-temperature 0.10 --temperature-turns 4 \
-  --cpu-affinity 0-23 --output /path/to/natural-result.json
+  --cpu-affinity "$CPU_AFFINITY" --output /path/to/natural-result.json
 ```
 
 Use forced openings only as a separate opening-coverage or color-bias
@@ -151,8 +149,7 @@ searched black singleton is turn one, while a forced opening is not searched.
 
 The arena replays both engines through independent contexts and checks stone
 count, player-to-move, terminal state, and winner after every non-terminal
-turn. Results for the ModelScope gen-0/400/800/801/best baselines are recorded
-in [RESULTS.md](RESULTS.md).
+turn. Published V1/V3 comparisons are summarized in the repository README.
 
 ## Public KataGomo baseline arena
 
@@ -169,7 +166,6 @@ The external executable and model are deliberately not vendored.  Build the
 natural-opening, color-reversed screen with:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 \
 python -m experiments.pair_native.katagomo_arena \
   --native-checkpoint /path/to/native-best.pth \
   --katagomo-engine /path/to/katago \
@@ -177,8 +173,8 @@ python -m experiments.pair_native.katagomo_arena \
   --katagomo-config /path/to/gtp.cfg \
   --pairs 16 --native-simulations 400 --katagomo-visits 400 \
   --top-k 64 --opening-mode natural \
-  --native-device cuda:0 --katagomo-gpu 1 \
-  --mcts-cpu-threads 24 --katagomo-threads 32 \
+  --native-device "$NATIVE_DEVICE" --katagomo-gpu "$KATAGOMO_GPU" \
+  --mcts-cpu-threads "$MCTS_THREADS" --katagomo-threads "$KATAGOMO_THREADS" \
   --output /path/to/result.json
 ```
 
@@ -189,25 +185,23 @@ the adapter fixes the visit cap, freestyle rules, NOVC, the 361-stone limit,
 and first-pass-win off.  It also checks the Python rules engine against the
 native C++ context after every complete turn.  Result JSON binds the native
 checkpoint, KataGomo executable, public model, and configuration by SHA256.
-Public-baseline measurements and exact local provenance are in
-[RESULTS.md](RESULTS.md).
 
 ## Native-Pair cold-start loop
 
 The native C++ MCTS owns one tree per game, batches one leaf from every active
 tree, uses canonical unordered Pair edges, reuses the played subtree, and
 handles immediate one- and two-stone wins exactly. The evaluator uses a fixed
-H20 batch, compiled PyTorch inference, compact Top-K transfer, and no duplicate
+inference batch, compiled PyTorch inference, compact Top-K transfer, and no duplicate
 scan by default.
 
 Recommended generation-zero command:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 python -m experiments.pair_native.selfplay \
+python -m experiments.pair_native.selfplay \
   --output-dir /path/to/gen0 \
   --checkpoint /path/to/random-initial.pth \
   --games 1024 \
-  --gpus 0,1,2,3 \
+  --gpus "$ACTOR_GPUS" \
   --concurrent-games 128 \
   --simulations 400 \
   --top-k 64 \
@@ -231,7 +225,7 @@ Train the first generations against the exact joint visit policy and the
 sparse search-proven root values:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python -m experiments.pair_native.train \
+python -m experiments.pair_native.train \
   --data-dir /path/to/gen0 \
   --init-checkpoint /path/to/random-initial.pth \
   --output-dir /path/to/gen0/train \
@@ -258,19 +252,14 @@ large generation should therefore start from the gen-1 best checkpoint with
 the same search settings and `--value-scale 1`; retain `--value-scale 0` for a
 small control shard so calibration regressions remain visible.
 
-On the measured dual-socket H20 host, GPUs 0–3 are local to NUMA node 0 and
-the launcher assigns each worker 24 distinct physical cores. The production
-default uses one worker per GPU, 24 OpenMP MCTS threads, and inference buckets
-16/32/64/128. Two workers per GPU can show 95–98% SM utilization, but produced
-only 235.7 useful turns/s versus 324.0 for the single-worker bucketed setup;
-do not optimize for utilization percentage alone.
+Tune worker count, CPU affinity, MCTS threads, and inference buckets on the
+target host. Prefer useful turns per second over device-utilization percentage.
 
-## Eight-GPU asynchronous loop
+## Asynchronous loop
 
-The conservative H20 production layout is six self-play GPUs, one learner GPU,
-and one paired arena gate GPU. A higher-throughput continuation layout uses
-seven self-play GPUs and one GPU shared by the serialized learner and gate.
-Actor rounds pin the accepted checkpoint they
+Actor, learner, and gate devices are explicit command-line inputs. The learner
+and gate may share a device because the orchestrator serializes them, while
+actors continue on their own devices. Actor rounds pin the accepted checkpoint they
 started with, so a promotion can never change weights in the middle of a game. At
 most one completed actor round may be stale. Replay is training-visible only
 after every shard manifest passes the strict audit; a candidate becomes
@@ -282,26 +271,21 @@ python -m experiments.pair_native.async_loop \
   --initial-checkpoint /path/to/gen1/best.pth \
   --rounds 20 \
   --start-generation 2 \
-  --games-per-round 1536 \
-  --actor-gpus 0,1,2,3,4,5 \
-  --learner-gpu 6 \
-  --gate-gpu 7
+  --games-per-round "$GAMES_PER_ROUND" \
+  --actor-gpus "$ACTOR_GPUS" \
+  --learner-gpu "$LEARNER_GPU" \
+  --gate-gpu "$GATE_GPU"
 ```
 
 Production defaults are 128 concurrent games/GPU, a 400-simulation floor and
 1200 ceiling, Top-64, searched natural openings, opening temperature 1.25
 (dynamically bounded to 1.0–1.5), early temperature 0.35,
-Gumbel 0.25, value scale 1, 24 pinned physical CPU cores per actor,
+Gumbel 0.25, value scale 1, configurable CPU affinity,
 16/32/64/128 inference buckets, learner batch 1024, a three-generation replay
 window, and a 64-pair color-swapped gate sampled without replacement from the
-81 central openings. GPU 0–3 use physical CPUs 0–95; GPU 4–7 use 96–191.
-Learner and gate alternate while all six actors continue,
-so seven GPUs are active during either phase without mixing candidate and
-accepted weights. Because the gate depends on the learner's completed
-candidate, reserving distinct learner and gate GPUs necessarily leaves one idle.
-They may instead safely share a GPU: the orchestrator enforces mutual exclusion.
-For seven actor GPUs, use a game count divisible by seven (for example 1,792,
-or 256 games per worker) to avoid the tail imbalance seen with 1,536 games.
+81 central openings. Choose a game count divisible by the actor count to avoid
+tail imbalance. The orchestrator prevents candidate and accepted weights from
+being mixed.
 
 The actor controller measures decisive black/white wins over the recent replay
 window. If either color leaves the 45–55% band, only the under-performing color
@@ -348,10 +332,5 @@ python -m experiments.pair_native.async_loop \
 
 The C++ search consumes the full budget for every searched turn, including
 terminal-singleton choices; only the explicitly audited forced opening records
-have zero simulations. A six-H20 steady run with 768 games produced
-55,319 turns in 231.57 s (3.317 games/s, 238.89 turns/s). All six shards were
-valid, with no duplicate complete games; the replay analyzer reported mean
-searched simulations exactly 400, mean neural evaluations 379.96, searched
-exact-state uniqueness 98.43%, and D4 uniqueness 97.28%. The policy support
-averaged 32.81 actions with a 64-action p90. These figures are a throughput
-and data-integrity baseline for the overnight run, not a strength claim.
+have zero simulations. Validate every generated shard with the replay analyzer
+before making it training-visible.

@@ -1,8 +1,7 @@
-# Inference-First A800 Models
+# Inference-First Models
 
-这里承载面向 A800 自对弈吞吐设计的候选网络、训练、TensorRT 导出和数值验证。所有
-训练产物默认写到仓库外的 `Nebula-Zero-Connect6-training/inference_vnext`，不会覆盖生产
-checkpoint；仓库只保存代码、配置与可复现实验结论。
+这里承载面向自对弈吞吐设计的候选网络、训练、TensorRT 导出和数值验证。训练产物应
+写到仓库外，不覆盖生产 checkpoint；仓库只保存通用代码与配置。
 
 当前候选：
 
@@ -22,8 +21,7 @@ checkpoint；仓库只保存代码、配置与可复现实验结论。
 Strong 先学习最新 replay 的 MCTS 策略、胜负价值，以及 V2 教师的策略与价值：
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,7 conda run -n connect6 torchrun \
-  --standalone --nproc_per_node=2 \
+torchrun --standalone --nproc_per_node="$WORLD_SIZE" \
   experiments/inference_vnext/train.py \
   --architecture dual_scale_c320_d16 \
   --task exact \
@@ -31,16 +29,14 @@ CUDA_VISIBLE_DEVICES=0,7 conda run -n connect6 torchrun \
   --epochs 48 \
   --batch-size 384 \
   --distill-policy-weight 0.5 \
-  --distill-value-weight 0.7 \
-  --cpu-affinity '0-29;62-91'
+  --distill-value-weight 0.7
 ```
 
 Pair 阶段从最佳 Strong checkpoint 初始化，联合训练第一子、条件第二子和
 `q(s,a1)`：
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,7 conda run -n connect6 torchrun \
-  --standalone --nproc_per_node=2 \
+torchrun --standalone --nproc_per_node="$WORLD_SIZE" \
   experiments/inference_vnext/train.py \
   --architecture dual_scale_c320_d16 \
   --task pair \
@@ -49,8 +45,7 @@ CUDA_VISIBLE_DEVICES=0,7 conda run -n connect6 torchrun \
   --epochs 24 \
   --batch-size 384 \
   --distill-policy-weight 0.5 \
-  --distill-value-weight 0.7 \
-  --cpu-affinity '0-29;62-91'
+  --distill-value-weight 0.7
 ```
 
 训练入口支持原子 checkpoint、`--resume` 断点续训、DDP、D4 增强和训练/验证棋局
@@ -75,34 +70,30 @@ python experiments/inference_vnext/train.py \
   --init-checkpoint /path/to/pair/best.pth
 ```
 
-长时间自对弈可用 `NEBULA_SELFPLAY_PROGRESS_INTERVAL` 控制日志频率，并用
-`NEBULA_SELFPLAY_CPU_AFFINITY='0-29;62-91'` 将各 worker 固定到对应 NUMA 节点。
+长时间自对弈可用 `NEBULA_SELFPLAY_PROGRESS_INTERVAL` 控制日志频率；如需绑核，
+通过 `NEBULA_SELFPLAY_CPU_AFFINITY` 按目标机器的拓扑配置。
 
 ## 导出与基准
 
 未训练结构的筛选产物统一写到 `/tmp`：
 
 ```bash
-CUDA_VISIBLE_DEVICES=4 conda run -n connect6 python \
-  experiments/inference_vnext/export_onnx.py \
+python experiments/inference_vnext/export_onnx.py \
   --architecture dual_scale_c320_d16 \
   --checkpoint /path/to/best.pth \
   --output /tmp/dual_scale_c320_d16.onnx
 
-CUDA_VISIBLE_DEVICES=4 \
-NEBULA_BUILD_GPU=0 \
 NEBULA_MCTS_BATCH_SIZE=64 \
 NEBULA_TRT_MAX_BATCH_SIZE=64 \
 NEBULA_TRT_TIMING_CACHE=/tmp/dual_scale_c320_d16.timing.cache \
-conda run -n connect6 python reinforcement_learning/pipeline/build_engine.py \
+python reinforcement_learning/pipeline/build_engine.py \
   /tmp/dual_scale_c320_d16.onnx /tmp/dual_scale_c320_d16.engine
 
-CUDA_VISIBLE_DEVICES=4 conda run -n connect6 python \
-  benchmarks/benchmark_tensorrt_engine.py \
+python benchmarks/benchmark_tensorrt_engine.py \
   --engine /tmp/dual_scale_c320_d16.engine \
   --batches 1,2,4,8,16,32,64 --copy-outputs
 ```
 
 随机权重测试只回答“部署图是否值得训练”，不能用于评价棋力。
 
-首轮 A800 数据与候选决策见 [RESULTS.md](RESULTS.md)。
+具体吞吐应在目标部署环境重新测量，不随源码仓库发布机器相关结果。

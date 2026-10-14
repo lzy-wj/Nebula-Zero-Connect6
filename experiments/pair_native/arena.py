@@ -18,11 +18,25 @@ from experiments.pair_native.pair_mcts import PASS_MOVE, PairMCTSEngine, TorchPa
 from experiments.pair_native.train import parse_cpu_affinity
 
 
+def load_arena_checkpoint(path: str | Path):
+    return load_checkpoint(path)
+
+
 def paired_standard_error(pair_scores: list[float]) -> float:
     """Standard error for color-swapped pair means, the gate's independent units."""
     if len(pair_scores) < 2:
         return 0.5
     return float(np.std(pair_scores, ddof=1) / math.sqrt(len(pair_scores)))
+
+
+def trajectory_fingerprint(actions: list, winner: int | None) -> str:
+    """Identify a played trajectory without evaluation-only pair metadata."""
+    payload = json.dumps(
+        {"actions": actions, "winner": winner},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def sample_unique_openings(
@@ -54,6 +68,12 @@ def main() -> int:
     parser.add_argument("--pairs", type=int, default=64)
     parser.add_argument("--simulations", type=int, default=400)
     parser.add_argument("--top-k", type=int, default=64)
+    parser.add_argument("--initial-hierarchical-first", type=int, default=0)
+    parser.add_argument("--initial-hierarchical-second", type=int, default=0)
+    parser.add_argument("--trained-hierarchical-first", type=int, default=0)
+    parser.add_argument("--trained-hierarchical-second", type=int, default=0)
+    parser.add_argument("--progressive-widening-base", type=int, default=0)
+    parser.add_argument("--progressive-widening-scale", type=float, default=0.0)
     parser.add_argument("--opening-radius", type=int, default=4)
     parser.add_argument(
         "--free-opening",
@@ -80,6 +100,16 @@ def main() -> int:
         default=True,
     )
     parser.add_argument(
+        "--initial-compile-model",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--trained-compile-model",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
         "--pad-batch-to",
         type=int,
         default=-1,
@@ -89,6 +119,25 @@ def main() -> int:
     arguments = parser.parse_args()
     if arguments.simulations < 1 or arguments.top_k < 1:
         raise ValueError("simulations and top_k must be positive")
+    for first, second in (
+        (arguments.initial_hierarchical_first, arguments.initial_hierarchical_second),
+        (arguments.trained_hierarchical_first, arguments.trained_hierarchical_second),
+    ):
+        if bool(first or second) and (
+            min(first, second) <= 0 or first * second != arguments.top_k
+        ):
+            raise ValueError(
+                "hierarchical candidates must both be positive and multiply to top_k"
+            )
+    if (
+        arguments.progressive_widening_base < 0
+        or arguments.progressive_widening_base > arguments.top_k
+        or not math.isfinite(arguments.progressive_widening_scale)
+        or arguments.progressive_widening_scale < 0
+        or bool(arguments.progressive_widening_base)
+        != bool(arguments.progressive_widening_scale)
+    ):
+        raise ValueError("invalid progressive widening parameters")
     if arguments.opening_temperature < 0.0:
         raise ValueError("opening-temperature must be non-negative")
     affinity = parse_cpu_affinity(arguments.cpu_affinity)
@@ -116,32 +165,46 @@ def main() -> int:
     )
 
     device = torch.device("cuda:0")
-    initial_model, _ = load_checkpoint(arguments.initial_checkpoint)
-    trained_model, _ = load_checkpoint(arguments.trained_checkpoint)
+    initial_model, _ = load_arena_checkpoint(arguments.initial_checkpoint)
+    trained_model, _ = load_arena_checkpoint(arguments.trained_checkpoint)
+    initial_compile_model = (
+        arguments.compile_model
+        if arguments.initial_compile_model is None
+        else arguments.initial_compile_model
+    )
+    trained_compile_model = (
+        arguments.compile_model
+        if arguments.trained_compile_model is None
+        else arguments.trained_compile_model
+    )
     evaluators = {
         "initial": TorchPairEvaluator(
             initial_model,
             device,
             top_k=arguments.top_k,
             candidate_gumbel=0.0,
-            compile_model=arguments.compile_model,
+            compile_model=initial_compile_model,
             deduplicate=False,
             pad_batch_to=pad_batch_to,
             batch_buckets=batch_buckets,
             value_scale=initial_value_scale,
             seed=arguments.seed,
+            hierarchical_first_candidates=arguments.initial_hierarchical_first,
+            hierarchical_seconds_per_first=arguments.initial_hierarchical_second,
         ),
         "trained": TorchPairEvaluator(
             trained_model,
             device,
             top_k=arguments.top_k,
             candidate_gumbel=0.0,
-            compile_model=arguments.compile_model,
+            compile_model=trained_compile_model,
             deduplicate=False,
             pad_batch_to=pad_batch_to,
             batch_buckets=batch_buckets,
             value_scale=trained_value_scale,
             seed=arguments.seed + 1,
+            hierarchical_first_candidates=arguments.trained_hierarchical_first,
+            hierarchical_seconds_per_first=arguments.trained_hierarchical_second,
         ),
     }
     engine = PairMCTSEngine(
@@ -149,6 +212,8 @@ def main() -> int:
         top_k=arguments.top_k,
         root_noise_epsilon=0.0,
         cpu_threads=arguments.mcts_cpu_threads,
+        progressive_widening_base=arguments.progressive_widening_base,
+        progressive_widening_scale=arguments.progressive_widening_scale,
     )
     rng = np.random.default_rng(arguments.seed)
     openings = (
@@ -252,17 +317,7 @@ def main() -> int:
     game_fingerprints = []
     game_details = []
     for game in games:
-        payload = json.dumps(
-            {
-                "pair": game["pair"],
-                "trained_black": game["trained_black"],
-                "actions": game["actions"],
-                "winner": game["winner"],
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        fingerprint = hashlib.sha256(payload).hexdigest()
+        fingerprint = trajectory_fingerprint(game["actions"], game["winner"])
         game_fingerprints.append(fingerprint)
         game_details.append({
             "pair": game["pair"],
@@ -281,6 +336,16 @@ def main() -> int:
         "games": total,
         "simulations": arguments.simulations,
         "top_k": arguments.top_k,
+        "initial_hierarchical": [
+            arguments.initial_hierarchical_first,
+            arguments.initial_hierarchical_second,
+        ],
+        "trained_hierarchical": [
+            arguments.trained_hierarchical_first,
+            arguments.trained_hierarchical_second,
+        ],
+        "progressive_widening_base": arguments.progressive_widening_base,
+        "progressive_widening_scale": arguments.progressive_widening_scale,
         "opening_radius": arguments.opening_radius,
         "opening_mode": "free" if arguments.free_opening else "forced",
         "opening_temperature": arguments.opening_temperature,
@@ -290,6 +355,8 @@ def main() -> int:
         "mcts_cpu_threads": arguments.mcts_cpu_threads,
         "batch_buckets": batch_buckets,
         "compile_model": arguments.compile_model,
+        "initial_compile_model": initial_compile_model,
+        "trained_compile_model": trained_compile_model,
         "pad_batch_to": pad_batch_to,
         "cpu_affinity": affinity,
         "trained_wins": trained_wins,
@@ -307,6 +374,10 @@ def main() -> int:
         "turns_per_second": sum(game["turns"] for game in games) / elapsed,
         "game_fingerprints": game_fingerprints,
         "unique_game_fingerprints": len(set(game_fingerprints)),
+        "unique_openings": len({
+            detail["opening"] for detail in game_details
+            if detail["opening"] is not None
+        }),
         "game_details": game_details,
         "evaluators": {
             name: evaluator.stats() for name, evaluator in evaluators.items()

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "name": "v4-hierarchical-96",
+  "top_k": 96,
+  "hierarchical_first_candidates": 24,
+  "hierarchical_seconds_per_first": 4,
+  "progressive_widening_base": 16,
+  "progressive_widening_scale": 2.5,
+  "candidate_gumbel": 0.25,
+  "minimum_simulations": 400,
+  "maximum_simulations": 1200,
+  "mcts_cpu_threads_per_gpu": 16,
+  "fallback_profile": "flat-64"
+}

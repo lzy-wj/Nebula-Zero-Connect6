@@ -3,7 +3,9 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <random>
+#include <thread>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -24,10 +26,24 @@ constexpr int PASS_MOVE = -1;
 
 struct Board {
     std::array<int8_t, BOARD_POINTS> cells{};
+    std::array<uint64_t, (BOARD_POINTS + 63) / 64> black_bits{};
+    std::array<uint64_t, (BOARD_POINTS + 63) / 64> white_bits{};
     int8_t current_player = BLACK;
     int16_t total_stones = 0;
     bool terminal = false;
     int8_t winner = 0;
+
+    void place(int move, int player) {
+        cells[move] = static_cast<int8_t>(player);
+        auto& bits = player == BLACK ? black_bits : white_bits;
+        bits[move / 64] |= uint64_t{1} << (move % 64);
+    }
+
+    void clear(int move, int player) {
+        cells[move] = 0;
+        auto& bits = player == BLACK ? black_bits : white_bits;
+        bits[move / 64] &= ~(uint64_t{1} << (move % 64));
+    }
 
     bool check_win(int move, int player) const {
         const int row = move / BOARD_SIZE;
@@ -59,9 +75,9 @@ struct Board {
         if (move < 0 || move >= BOARD_POINTS || cells[move] != 0) {
             return false;
         }
-        cells[move] = static_cast<int8_t>(player);
+        place(move, player);
         const bool won = check_win(move, player);
-        cells[move] = 0;
+        clear(move, player);
         return won;
     }
 
@@ -79,7 +95,7 @@ struct Board {
             }
         }
         const int actor = current_player;
-        cells[first] = static_cast<int8_t>(actor);
+        place(first, actor);
         ++total_stones;
         if (check_win(first, actor)) {
             terminal = true;
@@ -95,14 +111,14 @@ struct Board {
         }
         if (second == PASS_MOVE) {
             if (!opening) {
-                cells[first] = 0;
+                clear(first, actor);
                 --total_stones;
                 return false;
             }
             current_player = static_cast<int8_t>(-actor);
             return true;
         }
-        cells[second] = static_cast<int8_t>(actor);
+        place(second, actor);
         ++total_stones;
         if (check_win(second, actor)) {
             terminal = true;
@@ -137,9 +153,18 @@ struct Edge {
     Edge& operator=(const Edge&) = delete;
 };
 
+struct CandidateAction {
+    int16_t first = 0;
+    int16_t second = 0;
+    float prior = 0.0F;
+};
+
 struct Node {
     bool expanded = false;
+    int total_visits = 0;
     std::vector<Edge> edges;
+    std::vector<CandidateAction> candidates;
+    std::size_t next_candidate = 0;
 };
 
 struct Context {
@@ -164,9 +189,15 @@ using EvalCallback = int (*)(
 );
 
 EvalCallback G_EVAL_CALLBACK = nullptr;
+// The Python evaluator (and its CUDA stream/state) is shared by both lane
+// callback threads.  Keep the CPU preparation overlap, but serialize callback
+// entry so two lanes never concurrently touch Torch/Python state.
+std::mutex G_EVAL_CALLBACK_MUTEX;
 int G_TOP_K = 64;
 int G_RANDOM_CANDIDATES = 0;
 int G_CPU_THREADS = 1;
+int G_PROGRESSIVE_WIDENING_BASE = 0;
+float G_PROGRESSIVE_WIDENING_SCALE = 0.0F;
 float G_CPUCT = 1.5F;
 float G_ROOT_NOISE_EPSILON = 0.25F;
 float G_ROOT_DIRICHLET_ALPHA = 0.15F;
@@ -180,7 +211,12 @@ struct LeafJob {
     int context_index = -1;
     Node* node = nullptr;
     Board board;
-    std::vector<Edge*> path;
+    struct PathStep {
+        Node* node = nullptr;
+        Edge* edge = nullptr;
+    };
+    std::array<PathStep, BOARD_POINTS> path{};
+    int path_size = 0;
     std::vector<std::pair<int, int>> opponent_threats;
 };
 
@@ -189,58 +225,110 @@ struct WinningActions {
     std::vector<std::pair<int, int>> pairs;
 };
 
-WinningActions winning_actions(const Board& board, int player) {
-    WinningActions actions;
-    std::array<bool, BOARD_POINTS> seen_singles{};
-    std::unordered_set<int> seen_pairs;
-    constexpr int directions[4][2] = {{0, 1}, {1, 0}, {1, 1}, {1, -1}};
-    for (const auto& direction : directions) {
-        for (int row = 0; row < BOARD_SIZE; ++row) {
-            for (int column = 0; column < BOARD_SIZE; ++column) {
-                const int end_row = row + 5 * direction[0];
-                const int end_column = column + 5 * direction[1];
-                if (
-                    end_row < 0 || end_row >= BOARD_SIZE
-                    || end_column < 0 || end_column >= BOARD_SIZE
-                ) {
-                    continue;
-                }
-                int own = 0;
-                int empty_count = 0;
-                int empties[2] = {PASS_MOVE, PASS_MOVE};
-                bool blocked = false;
-                for (int offset = 0; offset < 6; ++offset) {
-                    const int point = (row + offset * direction[0]) * BOARD_SIZE
-                        + column + offset * direction[1];
-                    const int stone = board.cells[point];
-                    if (stone == player) {
-                        ++own;
-                    } else if (stone == 0) {
-                        if (empty_count < 2) {
-                            empties[empty_count] = point;
-                        }
-                        ++empty_count;
-                    } else {
-                        blocked = true;
-                        break;
+struct TacticalActions {
+    WinningActions current;
+    WinningActions opponent;
+};
+
+struct WinningWindow {
+    std::array<int16_t, 6> points{};
+    std::array<uint64_t, (BOARD_POINTS + 63) / 64> mask{};
+};
+
+const std::vector<WinningWindow>& winning_windows() {
+    static const std::vector<WinningWindow> windows = [] {
+        std::vector<WinningWindow> result;
+        result.reserve(924);
+        constexpr int directions[4][2] = {{0, 1}, {1, 0}, {1, 1}, {1, -1}};
+        for (const auto& direction : directions) {
+            for (int row = 0; row < BOARD_SIZE; ++row) {
+                for (int column = 0; column < BOARD_SIZE; ++column) {
+                    const int end_row = row + 5 * direction[0];
+                    const int end_column = column + 5 * direction[1];
+                    if (
+                        end_row < 0 || end_row >= BOARD_SIZE
+                        || end_column < 0 || end_column >= BOARD_SIZE
+                    ) {
+                        continue;
                     }
-                }
-                if (!blocked && own == 5 && empty_count == 1) {
-                    seen_singles[empties[0]] = true;
-                } else if (!blocked && own == 4 && empty_count == 2) {
-                    const int first = std::min(empties[0], empties[1]);
-                    const int second = std::max(empties[0], empties[1]);
-                    const int key = first * BOARD_POINTS + second;
-                    if (seen_pairs.insert(key).second) {
-                        actions.pairs.emplace_back(first, second);
+                    WinningWindow window;
+                    for (int offset = 0; offset < 6; ++offset) {
+                        const int point =
+                            (row + offset * direction[0]) * BOARD_SIZE
+                            + column + offset * direction[1];
+                        window.points[offset] = static_cast<int16_t>(point);
+                        window.mask[point / 64] |= uint64_t{1} << (point % 64);
                     }
+                    result.push_back(window);
                 }
             }
         }
+        return result;
+    }();
+    return windows;
+}
+
+TacticalActions tactical_actions(const Board& board) {
+    TacticalActions actions;
+    std::array<bool, BOARD_POINTS> current_singles{};
+    std::array<bool, BOARD_POINTS> opponent_singles{};
+    std::unordered_set<int> current_pairs;
+    std::unordered_set<int> opponent_pairs;
+    const int current = board.current_player;
+
+    const auto& current_bits = current == BLACK ? board.black_bits : board.white_bits;
+    const auto& opponent_bits = current == BLACK ? board.white_bits : board.black_bits;
+    for (const WinningWindow& window : winning_windows()) {
+        int current_count = 0;
+        int opponent_count = 0;
+        for (std::size_t word = 0; word < window.mask.size(); ++word) {
+            current_count += __builtin_popcountll(current_bits[word] & window.mask[word]);
+            opponent_count += __builtin_popcountll(opponent_bits[word] & window.mask[word]);
+        }
+        const int empty_count = 6 - current_count - opponent_count;
+        int empties[2] = {PASS_MOVE, PASS_MOVE};
+        if (empty_count <= 2) {
+            int empty_index = 0;
+            for (int point : window.points) {
+                if (board.cells[point] == 0) {
+                    empties[empty_index++] = point;
+                }
+            }
+        }
+
+        if (opponent_count == 0 && current_count == 5 && empty_count == 1) {
+            current_singles[empties[0]] = true;
+        } else if (
+            opponent_count == 0 && current_count == 4 && empty_count == 2
+        ) {
+            const int first = std::min(empties[0], empties[1]);
+            const int second = std::max(empties[0], empties[1]);
+            const int key = first * BOARD_POINTS + second;
+            if (current_pairs.insert(key).second) {
+                actions.current.pairs.emplace_back(first, second);
+            }
+        }
+
+        if (current_count == 0 && opponent_count == 5 && empty_count == 1) {
+            opponent_singles[empties[0]] = true;
+        } else if (
+            current_count == 0 && opponent_count == 4 && empty_count == 2
+        ) {
+            const int first = std::min(empties[0], empties[1]);
+            const int second = std::max(empties[0], empties[1]);
+            const int key = first * BOARD_POINTS + second;
+            if (opponent_pairs.insert(key).second) {
+                actions.opponent.pairs.emplace_back(first, second);
+            }
+        }
     }
+
     for (int move = 0; move < BOARD_POINTS; ++move) {
-        if (seen_singles[move]) {
-            actions.singles.push_back(move);
+        if (current_singles[move]) {
+            actions.current.singles.push_back(move);
+        }
+        if (opponent_singles[move]) {
+            actions.opponent.singles.push_back(move);
         }
     }
     return actions;
@@ -313,6 +401,56 @@ void apply_root_noise(Node& node, std::mt19937& rng) {
     normalize_priors(node);
 }
 
+void normalize_candidate_priors(std::vector<CandidateAction>& candidates) {
+    double total = 0.0;
+    for (const CandidateAction& action : candidates) {
+        if (std::isfinite(action.prior) && action.prior > 0.0F) {
+            total += action.prior;
+        }
+    }
+    const float uniform = candidates.empty()
+        ? 0.0F
+        : 1.0F / static_cast<float>(candidates.size());
+    for (CandidateAction& action : candidates) {
+        action.prior = total > 0.0
+            ? static_cast<float>(
+                (std::isfinite(action.prior) && action.prior > 0.0F
+                    ? action.prior
+                    : 0.0F) / total
+            )
+            : uniform;
+    }
+}
+
+void apply_root_noise(
+    std::vector<CandidateAction>& candidates,
+    std::mt19937& rng
+) {
+    if (
+        candidates.size() < 2
+        || G_ROOT_NOISE_EPSILON <= 0.0F
+        || G_ROOT_DIRICHLET_ALPHA <= 0.0F
+    ) {
+        return;
+    }
+    std::gamma_distribution<float> gamma(G_ROOT_DIRICHLET_ALPHA, 1.0F);
+    std::vector<float> noise(candidates.size());
+    double total = 0.0;
+    for (float& value : noise) {
+        value = gamma(rng);
+        total += value;
+    }
+    if (total <= 0.0) {
+        return;
+    }
+    for (std::size_t index = 0; index < candidates.size(); ++index) {
+        candidates[index].prior =
+            (1.0F - G_ROOT_NOISE_EPSILON) * candidates[index].prior
+            + G_ROOT_NOISE_EPSILON * static_cast<float>(noise[index] / total);
+    }
+    normalize_candidate_priors(candidates);
+}
+
 void expand_actions(
     LeafJob& job,
     const int16_t* first_moves,
@@ -322,7 +460,10 @@ void expand_actions(
     Node& node = *job.node;
     node.expanded = true;
     node.edges.clear();
-    node.edges.reserve(static_cast<std::size_t>(G_TOP_K));
+    node.candidates.clear();
+    node.next_candidate = 0;
+    std::vector<CandidateAction> candidates;
+    candidates.reserve(static_cast<std::size_t>(G_TOP_K));
     std::unordered_set<int> seen;
     const bool opening = job.board.total_stones == 0;
     const int random_candidates = std::min(G_RANDOM_CANDIDATES, G_TOP_K);
@@ -359,7 +500,11 @@ void expand_actions(
         if (!seen.insert(key).second) {
             continue;
         }
-        node.edges.emplace_back(first, second, priors[index]);
+        candidates.push_back({
+            static_cast<int16_t>(first),
+            static_cast<int16_t>(second),
+            priors[index],
+        });
     }
 
     if (random_candidates > 0) {
@@ -399,13 +544,17 @@ void expand_actions(
                 if (!seen.insert(key).second) {
                     continue;
                 }
-                node.edges.emplace_back(first, second, 1.0F / G_TOP_K);
+                candidates.push_back({
+                    static_cast<int16_t>(first),
+                    static_cast<int16_t>(second),
+                    1.0F / G_TOP_K,
+                });
                 ++added;
             }
         }
     }
 
-    if (node.edges.empty() && !opening && !job.opponent_threats.empty()) {
+    if (candidates.empty() && !opening && !job.opponent_threats.empty()) {
         for (int first = 0; first < BOARD_POINTS; ++first) {
             if (job.board.cells[first] != 0) {
                 continue;
@@ -415,18 +564,22 @@ void expand_actions(
                     continue;
                 }
                 if (blocks_all_threats(first, second, job.opponent_threats)) {
-                    node.edges.emplace_back(first, second, 1.0F);
-                    if (static_cast<int>(node.edges.size()) >= G_TOP_K) {
+                    candidates.push_back({
+                        static_cast<int16_t>(first),
+                        static_cast<int16_t>(second),
+                        1.0F,
+                    });
+                    if (static_cast<int>(candidates.size()) >= G_TOP_K) {
                         break;
                     }
                 }
             }
-            if (static_cast<int>(node.edges.size()) >= G_TOP_K) {
+            if (static_cast<int>(candidates.size()) >= G_TOP_K) {
                 break;
             }
         }
     }
-    if (node.edges.empty()) {
+    if (candidates.empty()) {
         int first = PASS_MOVE;
         int second = PASS_MOVE;
         for (int move = 0; move < BOARD_POINTS; ++move) {
@@ -440,21 +593,75 @@ void expand_actions(
             }
         }
         if (first != PASS_MOVE) {
-            node.edges.emplace_back(first, opening ? PASS_MOVE : second, 1.0F);
+            candidates.push_back({
+                static_cast<int16_t>(first),
+                static_cast<int16_t>(opening ? PASS_MOVE : second),
+                1.0F,
+            });
         }
     }
-    normalize_priors(node);
-    if (job.node == job.context->root.get()) {
-        apply_root_noise(node, job.context->rng);
+    normalize_candidate_priors(candidates);
+    if (G_PROGRESSIVE_WIDENING_BASE > 0) {
+        const bool root = job.node == job.context->root.get();
+        if (root) {
+            apply_root_noise(candidates, job.context->rng);
+        }
+        if (root || random_candidates > 0) {
+            std::stable_sort(
+                candidates.begin(),
+                candidates.end(),
+                [](const CandidateAction& left, const CandidateAction& right) {
+                    return left.prior > right.prior;
+                }
+            );
+        }
+        node.candidates = std::move(candidates);
+        const std::size_t initial = std::min(
+            node.candidates.size(),
+            static_cast<std::size_t>(G_PROGRESSIVE_WIDENING_BASE)
+        );
+        node.edges.reserve(initial);
+        while (node.next_candidate < initial) {
+            const CandidateAction& action = node.candidates[node.next_candidate++];
+            node.edges.emplace_back(action.first, action.second, action.prior);
+        }
+    } else {
+        node.edges.reserve(candidates.size());
+        for (const CandidateAction& action : candidates) {
+            node.edges.emplace_back(action.first, action.second, action.prior);
+        }
+        if (job.node == job.context->root.get()) {
+            apply_root_noise(node, job.context->rng);
+        }
+    }
+}
+
+void widen(Node& node) {
+    if (
+        G_PROGRESSIVE_WIDENING_BASE <= 0
+        || node.next_candidate >= node.candidates.size()
+    ) {
+        return;
+    }
+    const int widened = G_PROGRESSIVE_WIDENING_BASE + static_cast<int>(
+        G_PROGRESSIVE_WIDENING_SCALE
+        * std::sqrt(static_cast<float>(node.total_visits))
+    );
+    const std::size_t target = std::min(
+        node.candidates.size(),
+        static_cast<std::size_t>(std::max(widened, 1))
+    );
+    while (node.next_candidate < target) {
+        const CandidateAction& action = node.candidates[node.next_candidate++];
+        node.edges.emplace_back(action.first, action.second, action.prior);
     }
 }
 
 Edge* select_edge(Node& node) {
-    int parent_visits = 0;
-    for (const Edge& edge : node.edges) {
-        parent_visits += edge.visits;
-    }
-    const float exploration_scale = std::sqrt(static_cast<float>(parent_visits + 1));
+    widen(node);
+    const float exploration_scale = std::sqrt(
+        static_cast<float>(node.total_visits + 1)
+    );
     Edge* best = nullptr;
     float best_score = -1.0e30F;
     for (Edge& edge : node.edges) {
@@ -472,21 +679,26 @@ Edge* select_edge(Node& node) {
     return best;
 }
 
-void backup(std::vector<Edge*>& path, float leaf_value) {
+void backup(const LeafJob& job, float leaf_value) {
     float value = leaf_value;
-    for (auto iterator = path.rbegin(); iterator != path.rend(); ++iterator) {
+    for (int index = job.path_size - 1; index >= 0; --index) {
         value = -value;
-        Edge* edge = *iterator;
+        const LeafJob::PathStep& step = job.path[index];
+        Edge* edge = step.edge;
         ++edge->visits;
         edge->value_sum += value;
+        ++step.node->total_visits;
     }
 }
 
 bool expand_tactical(LeafJob& job, float& value) {
-    const WinningActions wins = winning_actions(job.board, job.board.current_player);
+    TacticalActions actions = tactical_actions(job.board);
+    WinningActions& wins = actions.current;
     if (!wins.singles.empty()) {
         job.node->expanded = true;
         job.node->edges.clear();
+        job.node->candidates.clear();
+        job.node->next_candidate = 0;
         job.node->edges.reserve(wins.singles.size());
         const float prior = 1.0F / static_cast<float>(wins.singles.size());
         for (int move : wins.singles) {
@@ -501,6 +713,8 @@ bool expand_tactical(LeafJob& job, float& value) {
     if (!wins.pairs.empty()) {
         job.node->expanded = true;
         job.node->edges.clear();
+        job.node->candidates.clear();
+        job.node->next_candidate = 0;
         job.node->edges.reserve(wins.pairs.size());
         const float prior = 1.0F / static_cast<float>(wins.pairs.size());
         for (const auto& action : wins.pairs) {
@@ -512,7 +726,7 @@ bool expand_tactical(LeafJob& job, float& value) {
         value = 1.0F;
         return true;
     }
-    const WinningActions threats = winning_actions(job.board, -job.board.current_player);
+    const WinningActions& threats = actions.opponent;
     for (int threat : threats.singles) {
         job.opponent_threats.emplace_back(threat, threat);
     }
@@ -547,7 +761,7 @@ int run_multi_impl(Context** contexts, const int* budgets, int context_count) {
 
     std::vector<LeafJob> jobs;
     jobs.reserve(context_count);
-    std::vector<LeafJob> network_jobs;
+    std::vector<LeafJob*> network_jobs;
     network_jobs.reserve(context_count);
     std::vector<float> tactical_values;
     tactical_values.reserve(context_count);
@@ -573,7 +787,8 @@ int run_multi_impl(Context** contexts, const int* budgets, int context_count) {
                 remaining[context_index] = 0;
                 continue;
             }
-            LeafJob job;
+            jobs.emplace_back();
+            LeafJob& job = jobs.back();
             job.context = &context;
             job.context_index = context_index;
             job.node = context.root.get();
@@ -584,14 +799,17 @@ int run_multi_impl(Context** contexts, const int* budgets, int context_count) {
                 if (edge == nullptr || !job.board.apply_action(edge->first, edge->second)) {
                     return 1;
                 }
-                job.path.push_back(edge);
+                if (job.path_size >= BOARD_POINTS) {
+                    return 1;
+                }
+                job.path[job.path_size++] = {job.node, edge};
                 if (edge->child == nullptr) {
                     edge->child = std::make_unique<Node>();
                 }
                 job.node = edge->child.get();
                 if (job.board.terminal) {
                     const float terminal_value = job.board.winner == 0 ? 0.0F : -1.0F;
-                    backup(job.path, terminal_value);
+                    backup(job, terminal_value);
                     --remaining[context_index];
                     --total_remaining;
                     ++context.last_simulations;
@@ -600,8 +818,8 @@ int run_multi_impl(Context** contexts, const int* budgets, int context_count) {
                     break;
                 }
             }
-            if (!completed) {
-                jobs.push_back(std::move(job));
+            if (completed) {
+                jobs.pop_back();
             }
         }
 
@@ -616,7 +834,7 @@ int run_multi_impl(Context** contexts, const int* budgets, int context_count) {
         for (std::size_t index = 0; index < jobs.size(); ++index) {
             LeafJob& job = jobs[index];
             if (tactical_flags[index]) {
-                backup(job.path, tactical_values[index]);
+                backup(job, tactical_values[index]);
                 --remaining[job.context_index];
                 --total_remaining;
                 ++job.context->last_simulations;
@@ -624,7 +842,7 @@ int run_multi_impl(Context** contexts, const int* budgets, int context_count) {
                 ++G_TOTAL_SIMULATIONS;
                 ++G_TOTAL_TACTICAL_EXPANSIONS;
             } else {
-                network_jobs.push_back(std::move(job));
+                network_jobs.push_back(&job);
             }
         }
 
@@ -639,12 +857,13 @@ int run_multi_impl(Context** contexts, const int* budgets, int context_count) {
         callback_priors.resize(static_cast<std::size_t>(batch) * G_TOP_K);
         callback_values.resize(batch);
         for (int index = 0; index < batch; ++index) {
+            const LeafJob& job = *network_jobs[index];
             std::copy(
-                network_jobs[index].board.cells.begin(),
-                network_jobs[index].board.cells.end(),
+                job.board.cells.begin(),
+                job.board.cells.end(),
                 callback_boards.begin() + static_cast<std::size_t>(index) * BOARD_POINTS
             );
-            callback_players[index] = network_jobs[index].board.current_player;
+            callback_players[index] = job.board.current_player;
         }
         const int callback_status = G_EVAL_CALLBACK(
             batch,
@@ -661,7 +880,7 @@ int run_multi_impl(Context** contexts, const int* budgets, int context_count) {
         ++G_TOTAL_EVAL_BATCHES;
         G_TOTAL_EVALUATIONS += batch;
         for (int index = 0; index < batch; ++index) {
-            LeafJob& job = network_jobs[index];
+            LeafJob& job = *network_jobs[index];
             expand_actions(
                 job,
                 callback_first.data() + static_cast<std::size_t>(index) * G_TOP_K,
@@ -669,13 +888,248 @@ int run_multi_impl(Context** contexts, const int* budgets, int context_count) {
                 callback_priors.data() + static_cast<std::size_t>(index) * G_TOP_K
             );
             const float value = std::clamp(callback_values[index], -1.0F, 1.0F);
-            backup(job.path, value);
+            backup(job, value);
             ++job.context->last_simulations;
             ++job.context->last_neural_evaluations;
             ++job.context->last_unique_nodes;
             ++G_TOTAL_SIMULATIONS;
             --remaining[job.context_index];
             --total_remaining;
+        }
+    }
+    return 0;
+}
+
+// The synchronous path above is retained as the reference implementation.
+// This lane-pipelined variant overlaps one GPU callback with CPU tree/leaf
+// preparation from the other half of the contexts.  Both lane threads may be
+// alive, but callback entry is serialized by G_EVAL_CALLBACK_MUTEX so the
+// Python/Torch evaluator remains serialized and deterministic.
+struct AsyncBatch {
+    std::vector<LeafJob> jobs;
+    std::vector<LeafJob*> network_jobs;
+    std::vector<int8_t> boards;
+    std::vector<int8_t> players;
+    std::vector<int16_t> first;
+    std::vector<int16_t> second;
+    std::vector<float> priors;
+    std::vector<float> values;
+    std::thread callback_thread;
+    int callback_status = 0;
+    bool launched = false;
+};
+
+bool prepare_async_lane(
+    Context** contexts,
+    const std::vector<int>& lane_indices,
+    std::vector<int>& remaining,
+    long long& total_remaining,
+    AsyncBatch& batch
+) {
+    batch.jobs.clear();
+    batch.network_jobs.clear();
+    batch.launched = false;
+    batch.callback_status = 0;
+    batch.jobs.reserve(lane_indices.size());
+    batch.network_jobs.reserve(lane_indices.size());
+    for (int context_index : lane_indices) {
+        if (remaining[context_index] <= 0) {
+            continue;
+        }
+        Context& context = *contexts[context_index];
+        if (context.board.terminal) {
+            total_remaining -= remaining[context_index];
+            remaining[context_index] = 0;
+            continue;
+        }
+        batch.jobs.emplace_back();
+        LeafJob& job = batch.jobs.back();
+        job.context = &context;
+        job.context_index = context_index;
+        job.node = context.root.get();
+        job.board = context.board;
+        bool completed = false;
+        while (job.node->expanded && !job.node->edges.empty()) {
+            Edge* edge = select_edge(*job.node);
+            if (edge == nullptr || !job.board.apply_action(edge->first, edge->second)) {
+                return false;
+            }
+            if (job.path_size >= BOARD_POINTS) {
+                return false;
+            }
+            job.path[job.path_size++] = {job.node, edge};
+            if (edge->child == nullptr) {
+                edge->child = std::make_unique<Node>();
+            }
+            job.node = edge->child.get();
+            if (job.board.terminal) {
+                const float terminal_value = job.board.winner == 0 ? 0.0F : -1.0F;
+                backup(job, terminal_value);
+                --remaining[context_index];
+                --total_remaining;
+                ++context.last_simulations;
+                ++G_TOTAL_SIMULATIONS;
+                completed = true;
+                break;
+            }
+        }
+        if (completed) {
+            batch.jobs.pop_back();
+        }
+    }
+
+    std::vector<float> tactical_values(batch.jobs.size(), 0.0F);
+    std::vector<uint8_t> tactical_flags(batch.jobs.size(), 0);
+#pragma omp parallel for if(G_CPU_THREADS > 1) num_threads(G_CPU_THREADS) schedule(static)
+    for (int index = 0; index < static_cast<int>(batch.jobs.size()); ++index) {
+        tactical_flags[index] = static_cast<uint8_t>(
+            expand_tactical(batch.jobs[index], tactical_values[index])
+        );
+    }
+    for (std::size_t index = 0; index < batch.jobs.size(); ++index) {
+        LeafJob& job = batch.jobs[index];
+        if (tactical_flags[index]) {
+            backup(job, tactical_values[index]);
+            --remaining[job.context_index];
+            --total_remaining;
+            ++job.context->last_simulations;
+            ++job.context->last_unique_nodes;
+            ++G_TOTAL_SIMULATIONS;
+            ++G_TOTAL_TACTICAL_EXPANSIONS;
+        } else {
+            batch.network_jobs.push_back(&job);
+        }
+    }
+    if (batch.network_jobs.empty()) {
+        return true;
+    }
+    const int count = static_cast<int>(batch.network_jobs.size());
+    batch.boards.resize(static_cast<std::size_t>(count) * BOARD_POINTS);
+    batch.players.resize(count);
+    batch.first.resize(static_cast<std::size_t>(count) * G_TOP_K);
+    batch.second.resize(static_cast<std::size_t>(count) * G_TOP_K);
+    batch.priors.resize(static_cast<std::size_t>(count) * G_TOP_K);
+    batch.values.resize(count);
+    for (int index = 0; index < count; ++index) {
+        const LeafJob& job = *batch.network_jobs[index];
+        std::copy(
+            job.board.cells.begin(),
+            job.board.cells.end(),
+            batch.boards.begin() + static_cast<std::size_t>(index) * BOARD_POINTS
+        );
+        batch.players[index] = job.board.current_player;
+    }
+    batch.callback_thread = std::thread([&batch, count]() {
+        std::lock_guard<std::mutex> lock(G_EVAL_CALLBACK_MUTEX);
+        batch.callback_status = G_EVAL_CALLBACK(
+            count,
+            batch.boards.data(),
+            batch.players.data(),
+            batch.first.data(),
+            batch.second.data(),
+            batch.priors.data(),
+            batch.values.data()
+        );
+    });
+    batch.launched = true;
+    return true;
+}
+
+bool finish_async_lane(
+    std::vector<int>& remaining,
+    long long& total_remaining,
+    AsyncBatch& batch
+) {
+    if (!batch.launched) {
+        return true;
+    }
+    batch.callback_thread.join();
+    batch.launched = false;
+    if (batch.callback_status != 0) {
+        return false;
+    }
+    const int count = static_cast<int>(batch.network_jobs.size());
+    ++G_TOTAL_EVAL_BATCHES;
+    G_TOTAL_EVALUATIONS += count;
+    for (int index = 0; index < count; ++index) {
+        LeafJob& job = *batch.network_jobs[index];
+        expand_actions(
+            job,
+            batch.first.data() + static_cast<std::size_t>(index) * G_TOP_K,
+            batch.second.data() + static_cast<std::size_t>(index) * G_TOP_K,
+            batch.priors.data() + static_cast<std::size_t>(index) * G_TOP_K
+        );
+        const float value = std::clamp(batch.values[index], -1.0F, 1.0F);
+        backup(job, value);
+        ++job.context->last_simulations;
+        ++job.context->last_neural_evaluations;
+        ++job.context->last_unique_nodes;
+        ++G_TOTAL_SIMULATIONS;
+        --remaining[job.context_index];
+        --total_remaining;
+    }
+    return true;
+}
+
+int run_multi_async_impl(Context** contexts, const int* budgets, int context_count) {
+    if (G_EVAL_CALLBACK == nullptr || context_count <= 0) {
+        return 1;
+    }
+    std::vector<int> remaining(context_count);
+    std::unordered_set<Context*> unique_contexts;
+    long long total_remaining = 0;
+    for (int index = 0; index < context_count; ++index) {
+        if (contexts[index] == nullptr || budgets[index] < 0) {
+            return 1;
+        }
+        if (!unique_contexts.insert(contexts[index]).second) {
+            return 1;
+        }
+        remaining[index] = budgets[index];
+        total_remaining += budgets[index];
+        contexts[index]->last_simulations = 0;
+        contexts[index]->last_neural_evaluations = 0;
+        contexts[index]->last_unique_nodes = 0;
+    }
+    std::vector<int> lanes[2];
+    lanes[0].reserve((context_count + 1) / 2);
+    lanes[1].reserve(context_count / 2);
+    for (int index = 0; index < context_count; ++index) {
+        lanes[index & 1].push_back(index);
+    }
+    AsyncBatch batches[2];
+    while (total_remaining > 0) {
+        if (!prepare_async_lane(
+                contexts, lanes[0], remaining, total_remaining, batches[0]
+            )) {
+            if (batches[0].launched) {
+                batches[0].callback_thread.join();
+                batches[0].launched = false;
+            }
+            return 1;
+        }
+        if (!prepare_async_lane(
+                contexts, lanes[1], remaining, total_remaining, batches[1]
+            )) {
+            if (batches[0].launched) {
+                batches[0].callback_thread.join();
+                batches[0].launched = false;
+            }
+            if (batches[1].launched) {
+                batches[1].callback_thread.join();
+                batches[1].launched = false;
+            }
+            return 1;
+        }
+        if (!finish_async_lane(remaining, total_remaining, batches[0])) {
+            if (batches[1].launched) {
+                batches[1].callback_thread.join();
+                batches[1].launched = false;
+            }
+            return 1;
+        }
+        if (!finish_async_lane(remaining, total_remaining, batches[1])) {
+            return 1;
         }
     }
     return 0;
@@ -750,6 +1204,13 @@ EXPORT void pair_mcts_set_cpu_threads(int count) {
     G_CPU_THREADS = std::max(count, 1);
 }
 
+EXPORT void pair_mcts_set_progressive_widening(int base, float scale) {
+    G_PROGRESSIVE_WIDENING_BASE = std::max(base, 0);
+    G_PROGRESSIVE_WIDENING_SCALE = std::isfinite(scale)
+        ? std::max(scale, 0.0F)
+        : 0.0F;
+}
+
 EXPORT void* pair_mcts_create_context(uint32_t seed) {
     return new Context(seed);
 }
@@ -760,6 +1221,10 @@ EXPORT void pair_mcts_destroy_context(void* handle) {
 
 EXPORT int pair_mcts_run_multi(void** handles, const int* budgets, int count) {
     return run_multi_impl(reinterpret_cast<Context**>(handles), budgets, count);
+}
+
+EXPORT int pair_mcts_run_multi_async(void** handles, const int* budgets, int count) {
+    return run_multi_async_impl(reinterpret_cast<Context**>(handles), budgets, count);
 }
 
 EXPORT int pair_mcts_choose_action(

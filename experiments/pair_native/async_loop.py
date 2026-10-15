@@ -23,10 +23,209 @@ from experiments.pair_native.pair_replay import (
     load_verified_games,
     sha256_file,
 )
+from experiments.pair_native.selfplay import (
+    cpu_thread_siblings,
+    expand_gpu_workers,
+    parse_linux_cpu_list,
+    topology_worker_affinities,
+)
 
 
 PRODUCTION_MIN_SIMULATIONS = 400
 PRODUCTION_MAX_SIMULATIONS = 1200
+
+
+class GpuBusyError(RuntimeError):
+    """Raised before a phase starts on a GPU owned by another process."""
+
+
+def parse_gpu_compute_processes(gpu_rows: str, process_rows: str) -> dict[int, list[int]]:
+    uuid_to_index = {}
+    for line in gpu_rows.splitlines():
+        if not line.strip():
+            continue
+        index, uuid = (item.strip() for item in line.split(",", 1))
+        uuid_to_index[uuid] = int(index)
+    result: dict[int, list[int]] = {index: [] for index in uuid_to_index.values()}
+    for line in process_rows.splitlines():
+        if not line.strip():
+            continue
+        uuid, pid = (item.strip() for item in line.split(",", 1))
+        if uuid in uuid_to_index:
+            result[uuid_to_index[uuid]].append(int(pid))
+    return result
+
+
+def gpu_compute_processes() -> dict[int, list[int]]:
+    gpu_rows = subprocess.run(
+        [
+            "nvidia-smi", "--query-gpu=index,uuid",
+            "--format=csv,noheader,nounits",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    process_rows = subprocess.run(
+        [
+            "nvidia-smi", "--query-compute-apps=gpu_uuid,pid",
+            "--format=csv,noheader,nounits",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    return parse_gpu_compute_processes(gpu_rows, process_rows)
+
+
+def descendant_pids(root_pid: int, process_rows: str | None = None) -> set[int]:
+    if process_rows is None:
+        process_rows = subprocess.run(
+            ["ps", "-eo", "pid=,ppid="],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    children: dict[int, list[int]] = {}
+    for line in process_rows.splitlines():
+        fields = line.split()
+        if len(fields) == 2:
+            pid, parent = (int(item) for item in fields)
+            children.setdefault(parent, []).append(pid)
+    result = {int(root_pid)}
+    pending = [int(root_pid)]
+    while pending:
+        for child in children.get(pending.pop(), []):
+            if child not in result:
+                result.add(child)
+                pending.append(child)
+    return result
+
+
+def require_idle_gpus(gpu_ids: list[int], phase: str) -> None:
+    snapshot = gpu_compute_processes()
+    busy = {gpu: snapshot.get(gpu, []) for gpu in gpu_ids if snapshot.get(gpu)}
+    if busy:
+        raise GpuBusyError(
+            f"refusing to launch {phase}; target GPUs have compute processes: {busy}"
+        )
+
+
+def require_owned_gpus(gpu_ids: list[int], root_pid: int, phase: str) -> None:
+    owned = descendant_pids(root_pid)
+    snapshot = gpu_compute_processes()
+    foreign = {
+        gpu: [pid for pid in snapshot.get(gpu, []) if pid not in owned]
+        for gpu in gpu_ids
+    }
+    foreign = {gpu: pids for gpu, pids in foreign.items() if pids}
+    if foreign:
+        raise GpuBusyError(
+            f"stopping {phase}; foreign compute processes joined target GPUs: {foreign}"
+        )
+
+
+def active_gpu_phases(
+    actor_active: bool,
+    learner_active: bool,
+    gate_active: bool,
+    actor_gpus: list[int],
+    learner_gpu: int,
+    gate_gpu: int,
+) -> list[tuple[str, list[int]]]:
+    phases = []
+    if actor_active:
+        phases.append(("actor", actor_gpus))
+    if learner_active:
+        phases.append(("learner", [learner_gpu]))
+    if gate_active:
+        phases.append(("gate", [gate_gpu]))
+    return phases
+
+ACTOR_SEARCH_PROFILE_MAPPING = {
+    "workers_per_gpu": "workers_per_gpu",
+    "concurrent_games": "concurrent_games",
+    "batch_buckets": "batch_buckets",
+    "mcts_cpu_threads_per_gpu": "mcts_cpu_threads",
+    "top_k": "top_k",
+    "hierarchical_first_candidates": "hierarchical_first_candidates",
+    "hierarchical_seconds_per_first": "hierarchical_seconds_per_first",
+    "progressive_widening_base": "progressive_widening_base",
+    "progressive_widening_scale": "progressive_widening_scale",
+    "candidate_gumbel": "candidate_gumbel",
+    "minimum_simulations": "minimum_selfplay_simulations",
+    "maximum_simulations": "maximum_selfplay_simulations",
+    "shard_games": "selfplay_shard_games",
+}
+
+
+def apply_actor_search_profile(arguments, profile_path: Path) -> dict:
+    profile_path = profile_path.expanduser().resolve()
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    for source, target in ACTOR_SEARCH_PROFILE_MAPPING.items():
+        if source not in profile:
+            continue
+        value = profile[source]
+        if source == "batch_buckets" and isinstance(value, list):
+            value = ",".join(str(item) for item in value)
+        setattr(arguments, target, value)
+    arguments.search_profile = str(profile_path)
+    arguments.search_profile_sha256 = sha256_file(profile_path)
+    return profile
+
+
+def gpu_hardware_records() -> dict[int, dict]:
+    output = subprocess.run(
+        [
+            "nvidia-smi", "--query-gpu=index,name,memory.total",
+            "--format=csv,noheader,nounits",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    records = {}
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        index, name, memory = (item.strip() for item in line.split(",", 2))
+        records[int(index)] = {
+            "name": name,
+            "memory_total_mib": int(memory),
+        }
+    return records
+
+
+def validate_actor_search_profile(
+    profile: dict,
+    checkpoint: Path,
+    gpu_ids: list[int],
+    allow_mismatch: bool = False,
+    hardware_records: dict[int, dict] | None = None,
+) -> list[str]:
+    mismatches = []
+    expected_hash = profile.get("checkpoint_sha256")
+    actual_hash = sha256_file(checkpoint)
+    if expected_hash and expected_hash != actual_hash:
+        mismatches.append("checkpoint_sha256")
+    hardware = profile.get("hardware", {})
+    if hardware.get("gpu_count") not in (None, len(gpu_ids)):
+        mismatches.append("hardware.gpu_count")
+    records = hardware_records if hardware_records is not None else gpu_hardware_records()
+    for gpu_id in gpu_ids:
+        record = records.get(gpu_id)
+        if record is None:
+            mismatches.append(f"hardware.gpu[{gpu_id}].missing")
+            continue
+        if hardware.get("gpu_name") not in (None, record["name"]):
+            mismatches.append(f"hardware.gpu[{gpu_id}].name")
+        if hardware.get("gpu_memory_mib") not in (
+            None, record["memory_total_mib"],
+        ):
+            mismatches.append(f"hardware.gpu[{gpu_id}].memory")
+    if mismatches and not allow_mismatch:
+        raise ValueError(f"search profile does not match this run: {mismatches}")
+    return mismatches
 
 
 def parse_simulation_schedule(specification: str) -> list[tuple[int, int]]:
@@ -417,14 +616,86 @@ def stalled_promotion_candidate(
     return best if float(best["score"]) >= minimum_score else None
 
 
-def gpu_cpu_affinity(gpu_id: int) -> str:
-    if 0 <= gpu_id < 4:
-        start = gpu_id * 24
-    elif 4 <= gpu_id < 8:
-        start = 96 + (gpu_id - 4) * 24
-    else:
-        raise ValueError("GPU IDs must be in [0, 7]")
-    return f"{start}-{start + 23}"
+def gpu_cpu_affinity(
+    gpu_id: int,
+    participating_gpus: list[int] | None = None,
+    topology_text: str | None = None,
+) -> str:
+    """Return a portable CPU partition for one GPU in the active layout."""
+    gpu_id = int(gpu_id)
+    if gpu_id < 0:
+        raise ValueError("GPU IDs must be non-negative")
+    gpu_ids = sorted(set(int(gpu) for gpu in (participating_gpus or [gpu_id])))
+    if gpu_id not in gpu_ids or any(gpu < 0 for gpu in gpu_ids):
+        raise ValueError("participating GPU IDs must be non-negative")
+    assignments = topology_worker_affinities(gpu_ids, topology_text=topology_text)
+    return format_cpu_affinity(assignments[gpu_ids.index(gpu_id)])
+
+
+def format_cpu_affinity(cpus: list[int]) -> str:
+    values = sorted(set(int(cpu) for cpu in cpus))
+    ranges = []
+    if not values:
+        return ""
+    start = previous = values[0]
+    for cpu in values[1:]:
+        if cpu == previous + 1:
+            previous = cpu
+            continue
+        ranges.append(str(start) if start == previous else f"{start}-{previous}")
+        start = previous = cpu
+    ranges.append(str(start) if start == previous else f"{start}-{previous}")
+    return ",".join(ranges)
+
+
+def actor_worker_cpu_affinities(
+    actor_gpus: list[int],
+    learner_gpu: int,
+    gate_gpu: int,
+    workers_per_gpu: int,
+    phases_are_serial: bool = False,
+    topology_text: str | None = None,
+) -> list[list[int]]:
+    actor_workers = expand_gpu_workers(actor_gpus, workers_per_gpu)
+    available = (
+        set(os.sched_getaffinity(0))
+        if hasattr(os, "sched_getaffinity")
+        else set(range(os.cpu_count() or 1))
+    )
+    if not phases_are_serial:
+        service_gpus = {int(learner_gpu), int(gate_gpu)} - set(actor_gpus)
+        participating_gpus = sorted(
+            set(int(gpu) for gpu in actor_gpus)
+            | {int(learner_gpu), int(gate_gpu)}
+        )
+        for gpu in service_gpus:
+            service_cpus = parse_linux_cpu_list(gpu_cpu_affinity(
+                gpu,
+                participating_gpus=participating_gpus,
+                topology_text=topology_text,
+            ))
+            service_siblings = {
+                sibling
+                for cpu in service_cpus
+                for sibling in cpu_thread_siblings(cpu)
+            }
+            available.difference_update(service_siblings)
+    return topology_worker_affinities(
+        actor_workers,
+        topology_text=topology_text,
+        allowed_cpus=available,
+    )
+
+
+def minimum_persistent_round_games(
+    actor_gpu_count: int,
+    workers_per_gpu: int,
+    concurrent_games: int,
+    shard_games: int,
+) -> int:
+    return actor_gpu_count * workers_per_gpu * (
+        2 * concurrent_games + 2 * shard_games
+    )
 
 
 def validate_gpu_layout(
@@ -442,12 +713,12 @@ def validate_gpu_layout(
     disjoint because self-play intentionally overlaps both service phases.
     """
     all_gpus = list(actor_gpus) + [int(learner_gpu), int(gate_gpu)]
-    if len(actor_gpus) < 1 or len(actor_gpus) > 7:
-        raise ValueError("async loop requires one to seven actor GPUs")
+    if len(actor_gpus) < 1:
+        raise ValueError("async loop requires at least one actor GPU")
     if len(set(actor_gpus)) != len(actor_gpus):
         raise ValueError("actor GPU IDs must be unique")
-    if any(not 0 <= gpu < 8 for gpu in all_gpus):
-        raise ValueError("GPU IDs must be in [0, 7]")
+    if any(gpu < 0 for gpu in all_gpus):
+        raise ValueError("GPU IDs must be non-negative")
     if single_gpu_serial and phase_serial:
         raise ValueError("choose only one serial scheduling mode")
     if single_gpu_serial:
@@ -728,6 +999,18 @@ def main() -> int:
     parser.add_argument("--start-generation", type=int, default=2)
     parser.add_argument("--games-per-round", type=int, default=1536)
     parser.add_argument("--actor-gpus", default="0,1,2,3,4,5")
+    parser.add_argument("--workers-per-gpu", type=int, choices=(1, 2, 3, 4), default=1)
+    parser.add_argument(
+        "--search-profile",
+        default="",
+        help="hardware search profile; values are frozen into the run configuration",
+    )
+    parser.add_argument(
+        "--allow-search-profile-mismatch",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="explicitly allow and record checkpoint or hardware profile mismatches",
+    )
     parser.add_argument("--learner-gpu", type=int, default=6)
     parser.add_argument("--gate-gpu", type=int, default=7)
     parser.add_argument(
@@ -748,8 +1031,15 @@ def main() -> int:
         help="drain in-flight work and pause cleanly when this file exists",
     )
     parser.add_argument("--concurrent-games", type=int, default=128)
+    parser.add_argument("--selfplay-shard-games", type=int, default=0)
     parser.add_argument("--batch-buckets", default="16,32,64,128")
     parser.add_argument("--mcts-cpu-threads", type=int, default=24)
+    parser.add_argument(
+        "--selfplay-worker-timeout-seconds",
+        type=float,
+        default=14_400.0,
+        help="wall-time limit passed to each multi-GPU self-play round",
+    )
     parser.add_argument("--simulations", type=int, default=400)
     parser.add_argument("--minimum-selfplay-simulations", type=int, default=400)
     parser.add_argument("--maximum-selfplay-simulations", type=int, default=1200)
@@ -768,6 +1058,10 @@ def main() -> int:
     parser.add_argument("--adaptive-mid-simulations", type=int, default=800)
     parser.add_argument("--adaptive-confidence-threshold", type=float, default=0.50)
     parser.add_argument("--top-k", type=int, default=64)
+    parser.add_argument("--hierarchical-first-candidates", type=int, default=0)
+    parser.add_argument("--hierarchical-seconds-per-first", type=int, default=0)
+    parser.add_argument("--progressive-widening-base", type=int, default=0)
+    parser.add_argument("--progressive-widening-scale", type=float, default=0.0)
     parser.add_argument("--candidate-gumbel", type=float, default=0.25)
     parser.add_argument("--value-scale", type=float, default=1.0)
     parser.add_argument("--forced-opening-radius", type=int, default=-1)
@@ -934,10 +1228,32 @@ def main() -> int:
         default=1,
         help="strict replay-audit processes used by each learner",
     )
+    parser.add_argument(
+        "--require-exclusive-gpus",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="pause instead of starting a phase on a GPU with another compute process",
+    )
     parser.add_argument("--resume", action="store_true")
     arguments = parser.parse_args()
 
+    arguments.search_profile_sha256 = ""
+    search_profile = {}
+    if arguments.search_profile:
+        search_profile = apply_actor_search_profile(
+            arguments, Path(arguments.search_profile)
+        )
+
     actor_gpus = [int(value) for value in arguments.actor_gpus.split(",") if value.strip()]
+    arguments.search_profile_mismatches = (
+        validate_actor_search_profile(
+            search_profile,
+            Path(arguments.initial_checkpoint).expanduser().resolve(),
+            actor_gpus,
+            arguments.allow_search_profile_mismatch,
+        )
+        if search_profile else []
+    )
     validate_gpu_layout(
         actor_gpus,
         arguments.learner_gpu,
@@ -947,6 +1263,32 @@ def main() -> int:
     )
     if arguments.rounds < 1 or arguments.games_per_round < len(actor_gpus):
         raise ValueError("rounds and games_per_round are too small")
+    if arguments.selfplay_shard_games < 0:
+        raise ValueError("selfplay_shard_games must be non-negative")
+    active_games = (
+        len(actor_gpus)
+        * arguments.workers_per_gpu
+        * arguments.concurrent_games
+    )
+    if arguments.games_per_round < active_games:
+        raise ValueError(
+            "games_per_round cannot fill the actor pools: "
+            f"need at least {active_games}"
+        )
+    if arguments.workers_per_gpu > 1 and arguments.selfplay_shard_games < 1:
+        raise ValueError("multiple workers per GPU require positive selfplay_shard_games")
+    if arguments.selfplay_shard_games > 0:
+        minimum_games = minimum_persistent_round_games(
+            len(actor_gpus),
+            arguments.workers_per_gpu,
+            arguments.concurrent_games,
+            arguments.selfplay_shard_games,
+        )
+        if arguments.games_per_round < minimum_games:
+            raise ValueError(
+                "games_per_round cannot fill and refresh the persistent pools: "
+                f"need at least {minimum_games}"
+            )
     if arguments.replay_window < 1:
         raise ValueError("replay_window must be positive")
     if arguments.replay_pool_window < 0 or arguments.replay_recent_window < 0:
@@ -968,6 +1310,11 @@ def main() -> int:
         raise ValueError("replay_audit_workers must be positive")
     if arguments.train_replay_audit_workers < 1:
         raise ValueError("train_replay_audit_workers must be positive")
+    if (
+        not math.isfinite(arguments.selfplay_worker_timeout_seconds)
+        or arguments.selfplay_worker_timeout_seconds <= 0.0
+    ):
+        raise ValueError("selfplay_worker_timeout_seconds must be positive")
     if arguments.max_stale_rounds < 0:
         raise ValueError("max_stale_rounds must be nonnegative")
     if arguments.color_balance_window < 1:
@@ -1047,6 +1394,31 @@ def main() -> int:
         raise ValueError("train_sampler_raking_iterations must be positive")
     if arguments.simulations < 1 or arguments.top_k < 1 or arguments.gate_simulations < 1:
         raise ValueError("simulations, gate_simulations, and top_k must be positive")
+    hierarchical = bool(
+        arguments.hierarchical_first_candidates
+        or arguments.hierarchical_seconds_per_first
+    )
+    if hierarchical and (
+        min(
+            arguments.hierarchical_first_candidates,
+            arguments.hierarchical_seconds_per_first,
+        ) <= 0
+        or arguments.hierarchical_first_candidates
+        * arguments.hierarchical_seconds_per_first
+        != arguments.top_k
+    ):
+        raise ValueError(
+            "hierarchical candidates must both be positive and multiply to top_k"
+        )
+    if (
+        arguments.progressive_widening_base < 0
+        or arguments.progressive_widening_base > arguments.top_k
+        or not math.isfinite(arguments.progressive_widening_scale)
+        or arguments.progressive_widening_scale < 0
+        or bool(arguments.progressive_widening_base)
+        != bool(arguments.progressive_widening_scale)
+    ):
+        raise ValueError("invalid progressive widening parameters")
     if arguments.gate_pairs < 2:
         raise ValueError("gate_pairs must be at least two for a paired confidence bound")
     if not 0 <= arguments.gate_opening_radius <= 9:
@@ -1121,10 +1493,14 @@ def main() -> int:
             "resume_audit_from_round",
             "resume",
             "rounds",
+            "selfplay_worker_timeout_seconds",
             "single_gpu_serial",
             "quality_retry_gumbel_increment",
             "quality_retry_gumbel_maximum",
             "quality_retry_seed_stride",
+            "require_exclusive_gpus",
+            "allow_search_profile_mismatch",
+            "search_profile_mismatches",
         }
         backward_compatible_defaults = {
             "replay_audit_workers": 1,
@@ -1153,6 +1529,13 @@ def main() -> int:
             "quality_retry_gumbel_increment": 0.0,
             "quality_retry_gumbel_maximum": 1.0,
             "quality_retry_seed_stride": 10_000_019,
+            "workers_per_gpu": 1,
+            "search_profile": "",
+            "search_profile_sha256": "",
+            "selfplay_shard_games": 0,
+            "require_exclusive_gpus": False,
+            "allow_search_profile_mismatch": False,
+            "search_profile_mismatches": [],
         }
         incompatible = {
             key: (
@@ -1354,8 +1737,11 @@ def main() -> int:
     actor_job = None
     learner_job = None
     gate_job = None
+    next_gpu_ownership_check = 0.0
 
     def launch_actor(round_index: int):
+        if arguments.require_exclusive_gpus:
+            require_idle_gpus(actor_gpus, "actor")
         generation = arguments.start_generation + round_index
         round_simulations = scheduled_simulations(
             round_index,
@@ -1418,6 +1804,18 @@ def main() -> int:
         )
         retry_gumbel = retry_sampling["candidate_gumbel"]
         actor_seed = retry_sampling["seed"]
+        worker_affinities = actor_worker_cpu_affinities(
+            actor_gpus,
+            arguments.learner_gpu,
+            arguments.gate_gpu,
+            arguments.workers_per_gpu,
+            phases_are_serial=(
+                arguments.single_gpu_serial or arguments.phase_serial
+            ),
+        )
+        worker_affinity_spec = ";".join(
+            format_cpu_affinity(cpus) for cpus in worker_affinities
+        )
         command = [
             sys.executable,
             "-m",
@@ -1430,12 +1828,20 @@ def main() -> int:
             str(arguments.games_per_round),
             "--gpus",
             ",".join(str(value) for value in actor_gpus),
+            "--workers-per-gpu",
+            str(arguments.workers_per_gpu),
+            "--worker-cpu-affinities",
+            worker_affinity_spec,
+            "--shard-games",
+            str(arguments.selfplay_shard_games),
             "--concurrent-games",
             str(arguments.concurrent_games),
             "--batch-buckets",
             arguments.batch_buckets,
             "--mcts-cpu-threads",
             str(arguments.mcts_cpu_threads),
+            "--worker-timeout-seconds",
+            str(arguments.selfplay_worker_timeout_seconds),
             "--simulations",
             str(round_simulations),
             "--black-simulations",
@@ -1450,6 +1856,14 @@ def main() -> int:
             str(arguments.adaptive_confidence_threshold),
             "--top-k",
             str(arguments.top_k),
+            "--hierarchical-first-candidates",
+            str(arguments.hierarchical_first_candidates),
+            "--hierarchical-seconds-per-first",
+            str(arguments.hierarchical_seconds_per_first),
+            "--progressive-widening-base",
+            str(arguments.progressive_widening_base),
+            "--progressive-widening-scale",
+            str(arguments.progressive_widening_scale),
             "--candidate-gumbel",
             str(retry_gumbel),
             "--random-candidates",
@@ -1491,6 +1905,10 @@ def main() -> int:
                 "seed": actor_seed,
                 "candidate_gumbel": retry_gumbel,
             },
+            "worker_cpu_affinities": worker_affinities,
+            "workers_per_gpu": arguments.workers_per_gpu,
+            "search_profile": arguments.search_profile,
+            "search_profile_sha256": arguments.search_profile_sha256,
         }
         # Keep every quality attempt's log.  Reusing one round-level filename
         # used to truncate the failed attempt as soon as retry 1 started,
@@ -1506,6 +1924,8 @@ def main() -> int:
         )
 
     def launch_learner(through_round: int):
+        if arguments.require_exclusive_gpus:
+            require_idle_gpus([arguments.learner_gpu], "learner")
         available = sorted(
             (
                 item for item in completed_rounds
@@ -1559,7 +1979,10 @@ def main() -> int:
             "--seed",
             str(arguments.seed + through_round * 7_919),
             "--cpu-affinity",
-            gpu_cpu_affinity(arguments.learner_gpu),
+            gpu_cpu_affinity(
+                arguments.learner_gpu,
+                actor_gpus + [arguments.learner_gpu, arguments.gate_gpu],
+            ),
         ])
         command.append(
             "--single-pass-audit-load"
@@ -1593,6 +2016,8 @@ def main() -> int:
         )
 
     def launch_gate(learner_metadata: dict):
+        if arguments.require_exclusive_gpus:
+            require_idle_gpus([arguments.gate_gpu], "gate")
         candidate = Path(learner_metadata["directory"]) / "best.pth"
         if not candidate.exists():
             raise RuntimeError(f"learner did not publish {candidate}")
@@ -1620,6 +2045,18 @@ def main() -> int:
             str(arguments.gate_simulations),
             "--top-k",
             str(arguments.top_k),
+            "--initial-hierarchical-first",
+            str(arguments.hierarchical_first_candidates),
+            "--initial-hierarchical-second",
+            str(arguments.hierarchical_seconds_per_first),
+            "--trained-hierarchical-first",
+            str(arguments.hierarchical_first_candidates),
+            "--trained-hierarchical-second",
+            str(arguments.hierarchical_seconds_per_first),
+            "--progressive-widening-base",
+            str(arguments.progressive_widening_base),
+            "--progressive-widening-scale",
+            str(arguments.progressive_widening_scale),
             "--opening-radius",
             str(arguments.gate_opening_radius),
             "--opening-temperature",
@@ -1631,7 +2068,10 @@ def main() -> int:
             "--batch-buckets",
             arguments.batch_buckets,
             "--cpu-affinity",
-            gpu_cpu_affinity(arguments.gate_gpu),
+            gpu_cpu_affinity(
+                arguments.gate_gpu,
+                actor_gpus + [arguments.learner_gpu, arguments.gate_gpu],
+            ),
             "--seed",
             str(gate_seed),
             "--output",
@@ -1669,6 +2109,18 @@ def main() -> int:
     save_state("running")
     try:
         while True:
+            now = time.monotonic()
+            if arguments.require_exclusive_gpus and now >= next_gpu_ownership_check:
+                for active_phase, active_gpus in active_gpu_phases(
+                    actor_job is not None,
+                    learner_job is not None,
+                    gate_job is not None,
+                    actor_gpus,
+                    arguments.learner_gpu,
+                    arguments.gate_gpu,
+                ):
+                    require_owned_gpus(active_gpus, os.getpid(), active_phase)
+                next_gpu_ownership_check = now + 10.0
             if actor_job is not None and actor_job.process.poll() is not None:
                 return_code = actor_job.process.returncode
                 actor_job.close_log()
@@ -1831,6 +2283,18 @@ def main() -> int:
                 learner_job = launch_learner(training_round)
                 save_state("running")
             time.sleep(arguments.poll_seconds)
+    except GpuBusyError as error:
+        terminate_job(actor_job)
+        terminate_job(learner_job)
+        terminate_job(gate_job)
+        state["pause_reason"] = {
+            "kind": "gpu_busy",
+            "message": str(error),
+            "unix": time.time(),
+        }
+        save_state("paused")
+        print(json.dumps(state["pause_reason"]), file=sys.stderr, flush=True)
+        return 75
     except KeyboardInterrupt:
         terminate_job(actor_job)
         terminate_job(learner_job)

@@ -57,7 +57,7 @@ def main() -> int:
     parser.add_argument("--opening-radius", type=int, default=4)
     parser.add_argument("--value-scale", type=float, default=1.0)
     parser.add_argument("--mcts-cpu-threads", type=int, default=24)
-    parser.add_argument("--cpu-affinity", default="0-23")
+    parser.add_argument("--cpu-affinity", default="")
     parser.add_argument("--seed", type=int, default=2026092407)
     parser.add_argument(
         "--variants",

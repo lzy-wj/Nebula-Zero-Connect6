@@ -21,6 +21,7 @@ from experiments.nebula_v4.build_mmap_cache import (
 from experiments.nebula_v4.mmap_dataset import MMapTurnDataset
 from experiments.nebula_v4.train_cpu import hierarchical_auxiliary_loss
 from experiments.pair_native.pair_replay import pack_points
+from experiments.pair_native.pair_mcts import HierarchicalPairInference
 from experiments.pair_native.model import load_checkpoint
 from experiments.pair_native.train import PairTurnDataset
 
@@ -161,6 +162,44 @@ def test_pair_row_scores_match_canonical_full_matrix():
     batch = torch.arange(2)[:, None, None].expand_as(canonical_first)
     expected = full[batch, canonical_first, canonical_second]
     torch.testing.assert_close(rows, expected)
+
+
+def test_hierarchical_pair_inference_returns_unique_legal_pairs():
+    torch.manual_seed(23)
+    model = NebulaV4(
+        feature_dim=32,
+        stem_channels=8,
+        summary_tokens=8,
+        depth=1,
+        num_heads=4,
+        pair_rank=8,
+    )
+    features = empty_features(2)
+    features[0, 0, 0, 0] = 1.0
+    features[0, 2, 0, 0] = 0.0
+    features[1, 1, 18, 18] = 1.0
+    features[1, 2, 18, 18] = 0.0
+    inference = HierarchicalPairInference(model, 8, 4)
+    first, second, priors, values = inference(features)
+
+    assert first.shape == second.shape == priors.shape == (2, 32)
+    assert values.shape == (2,)
+    assert torch.all(first < second)
+    assert not torch.any(first[0].eq(0) | second[0].eq(0))
+    assert not torch.any(first[1].eq(360) | second[1].eq(360))
+    torch.testing.assert_close(priors.sum(dim=1), torch.ones(2))
+    for row in range(2):
+        pairs = set(zip(first[row].tolist(), second[row].tolist()))
+        assert len(pairs) == 32
+
+    noisy = HierarchicalPairInference(model, 8, 4, candidate_gumbel=0.25)
+    noisy_outputs = noisy(
+        features,
+        torch.zeros(2, 361),
+        torch.zeros(2, 8, 361),
+    )
+    for actual, expected in zip(noisy_outputs, (first, second, priors, values)):
+        torch.testing.assert_close(actual, expected)
 
 
 def test_common_checkpoint_loader_supports_v4(tmp_path):

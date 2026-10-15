@@ -72,6 +72,10 @@ def main() -> int:
     parser.add_argument("--native-simulations", type=int, default=400)
     parser.add_argument("--legacy-simulations", type=int, default=400)
     parser.add_argument("--top-k", type=int, default=64)
+    parser.add_argument("--hierarchical-first-candidates", type=int, default=0)
+    parser.add_argument("--hierarchical-seconds-per-first", type=int, default=0)
+    parser.add_argument("--progressive-widening-base", type=int, default=0)
+    parser.add_argument("--progressive-widening-scale", type=float, default=0.0)
     parser.add_argument(
         "--opening-mode",
         choices=("forced", "natural"),
@@ -94,6 +98,19 @@ def main() -> int:
         raise ValueError("simulation budgets must be positive")
     if arguments.top_k < 1 or arguments.mcts_cpu_threads < 1:
         raise ValueError("top_k and mcts_cpu_threads must be positive")
+    if bool(arguments.hierarchical_first_candidates or arguments.hierarchical_seconds_per_first) and (
+        min(arguments.hierarchical_first_candidates, arguments.hierarchical_seconds_per_first) <= 0
+        or arguments.hierarchical_first_candidates * arguments.hierarchical_seconds_per_first != arguments.top_k
+    ):
+        raise ValueError("hierarchical candidates must multiply to top_k")
+    if (
+        arguments.progressive_widening_base < 0
+        or arguments.progressive_widening_base > arguments.top_k
+        or not math.isfinite(arguments.progressive_widening_scale)
+        or arguments.progressive_widening_scale < 0
+        or bool(arguments.progressive_widening_base) != bool(arguments.progressive_widening_scale)
+    ):
+        raise ValueError("invalid progressive widening parameters")
     if arguments.early_temperature < 0.0 or arguments.temperature_turns < 0:
         raise ValueError("early temperature and temperature turns must be non-negative")
     affinity = parse_cpu_affinity(arguments.cpu_affinity)
@@ -134,12 +151,16 @@ def main() -> int:
         batch_buckets=batch_buckets,
         value_scale=arguments.value_scale,
         seed=arguments.seed,
+        hierarchical_first_candidates=arguments.hierarchical_first_candidates,
+        hierarchical_seconds_per_first=arguments.hierarchical_seconds_per_first,
     )
     native_engine = PairMCTSEngine(
         native_evaluator,
         top_k=arguments.top_k,
         root_noise_epsilon=0.0,
         cpu_threads=arguments.mcts_cpu_threads,
+        progressive_widening_base=arguments.progressive_widening_base,
+        progressive_widening_scale=arguments.progressive_widening_scale,
     )
 
     legacy_engine = MCTSEngine(str(legacy_engine_path), device=device)

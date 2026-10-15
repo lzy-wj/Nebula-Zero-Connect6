@@ -1,3 +1,4 @@
+import argparse
 import csv
 import copy
 import ctypes
@@ -11,14 +12,43 @@ import torch
 import numpy as np
 
 from experiments.pair_native.game_audit import audit_paths, coordinate_to_index
-from experiments.pair_native.arena import paired_standard_error, sample_unique_openings
+from experiments.pair_native.arena import (
+    paired_standard_error,
+    sample_unique_openings,
+    trajectory_fingerprint,
+)
+from experiments.pair_native.autotune_selfplay import (
+    compress_cpu_list,
+    distinct_context_candidates,
+    partition_cpu_affinity,
+    parse_positive_csv,
+    topology_cpu_affinity,
+    validate_or_write_request,
+)
+from experiments.pair_native.autotune_capacity import (
+    baseline_threads,
+    candidate_name,
+    default_contexts,
+    distinct_worker_candidates,
+    full_validation_candidates,
+    interpolate_cumulative,
+    rounded_contexts,
+    select_gpu_ids,
+    ensure_gpus_idle,
+)
 from experiments.pair_native.async_loop import (
+    apply_actor_search_profile,
+    active_gpu_phases,
+    actor_worker_cpu_affinities,
     atomic_json,
     dynamic_color_budgets,
     dynamic_opening_temperature,
+    descendant_pids,
     gpu_cpu_affinity,
     next_training_round,
+    minimum_persistent_round_games,
     pause_drain_complete,
+    parse_gpu_compute_processes,
     promotion_decision,
     quality_retry_opening_control,
     quality_retry_sampling_control,
@@ -26,7 +56,10 @@ from experiments.pair_native.async_loop import (
     scheduled_simulations,
     select_replay_generations,
     stalled_promotion_candidate,
+    require_idle_gpus,
+    require_owned_gpus,
     validate_gpu_layout,
+    validate_actor_search_profile,
     validate_replay,
 )
 from experiments.pair_native.legacy_provenance import (
@@ -59,9 +92,13 @@ from experiments.pair_native.pair_replay import (
 from experiments.pair_native.pair_mcts import EVAL_CALLBACK, PairMCTSEngine
 from experiments.pair_native.prepare_public_dataset import export_dataset
 from experiments.pair_native.selfplay import (
+    expand_gpu_workers,
     opening_distribution,
     parse_linux_cpu_list,
     planned_cpu_affinity,
+    parse_worker_cpu_affinities,
+    should_auto_cpu_affinity,
+    topology_worker_affinities,
     validate_simulation_budgets,
 )
 from experiments.pair_native.selfplay_sweep import validate_benchmark_output_root
@@ -132,18 +169,27 @@ def test_katagomo_coordinate_adapter_and_fixed_visit_override():
 
 def test_async_resource_mapping_and_paired_promotion_statistics(tmp_path):
     assert parse_cpu_affinity("0-2,5,2") == [0, 1, 2, 5]
-    assert gpu_cpu_affinity(0) == "0-23"
-    assert gpu_cpu_affinity(3) == "72-95"
-    assert gpu_cpu_affinity(4) == "96-119"
-    assert gpu_cpu_affinity(7) == "168-191"
+    topology = """
+            GPU0 GPU1 CPU Affinity NUMA Affinity
+    GPU0     X   SYS  0-3          0
+    GPU1    SYS   X   0-3          0
+    """
+    assert gpu_cpu_affinity(0, [0, 1], topology) == "0-1"
+    assert gpu_cpu_affinity(1, [0, 1], topology) == "2-3"
     assert parse_linux_cpu_list("0-2,5,192-194") == [0, 1, 2, 5, 192, 193, 194]
-    assert planned_cpu_affinity(0, 0) == list(range(24))
+    assert planned_cpu_affinity(
+        0,
+        0,
+        available_cpus=[0, 1, 2, 3],
+        sibling_resolver=lambda cpu: [cpu, cpu + 8],
+    ) == [0, 1, 2, 3]
     assert planned_cpu_affinity(
         0,
         0,
         include_smt=True,
-        sibling_resolver=lambda cpu: [cpu, cpu + 192],
-    ) == list(range(24)) + list(range(192, 216))
+        sibling_resolver=lambda cpu: [cpu, cpu + 8],
+        available_cpus=[0, 1, 2, 3],
+    ) == list(range(4)) + list(range(8, 12))
     safe_benchmark = tmp_path / "benchmarks" / "sweep"
     validate_benchmark_output_root(safe_benchmark)
     async_root = tmp_path / "async"
@@ -214,8 +260,8 @@ def test_async_resource_mapping_and_paired_promotion_statistics(tmp_path):
         validate_gpu_layout([0, 0], 6, 7)
     with pytest.raises(ValueError, match="cannot also be actor"):
         validate_gpu_layout(list(range(7)), 6, 7)
-    with pytest.raises(ValueError, match=r"\[0, 7\]"):
-        validate_gpu_layout([0, 8], 7, 7)
+    with pytest.raises(ValueError, match="non-negative"):
+        validate_gpu_layout([-1], 0, 0)
     validate_gpu_layout([7], 7, 7, single_gpu_serial=True)
     with pytest.raises(ValueError, match="one shared"):
         validate_gpu_layout([6, 7], 7, 7, single_gpu_serial=True)
@@ -303,6 +349,216 @@ def test_replay_pool_selection_keeps_recent_and_spreads_history():
         item["round_index"]
         for item in select_replay_generations(available, selected_window=3)
     ] == [47, 48, 49]
+
+
+def test_trajectory_fingerprint_ignores_evaluation_pair_metadata():
+    actions = [(180, -1), (160, 181)]
+    assert trajectory_fingerprint(actions, 1) == trajectory_fingerprint(
+        list(actions), 1
+    )
+    assert trajectory_fingerprint(actions, 1) != trajectory_fingerprint(actions, -1)
+    assert trajectory_fingerprint(actions, 1) != trajectory_fingerprint(
+        [(180, -1), (161, 181)], 1
+    )
+
+
+def test_hardware_autotune_parses_topology_and_candidates():
+    topology = """
+            GPU0 GPU1 CPU Affinity NUMA Affinity
+    GPU0     X   NV8  0-3,8-11    0
+    GPU1    NV8   X   4-7,12-15   1
+    """
+    assert topology_cpu_affinity(topology, 1) == [4, 5, 6, 7, 12, 13, 14, 15]
+    assert compress_cpu_list([0, 1, 2, 5, 7, 8]) == "0-2,5,7-8"
+    assert parse_positive_csv("512,128,512,256") == [128, 256, 512]
+    ranked = [
+        {"contexts": 2048, "mcts_cpu_threads": 24},
+        {"contexts": 2048, "mcts_cpu_threads": 64},
+        {"contexts": 1536, "mcts_cpu_threads": 24},
+    ]
+    assert distinct_context_candidates(ranked, 2) == [ranked[0], ranked[2]]
+    assert partition_cpu_affinity(list(range(8)), 2) == [
+        [0, 1, 2, 3],
+        [4, 5, 6, 7],
+    ]
+    shared_topology = """
+            GPU0 GPU1 CPU Affinity NUMA Affinity
+    GPU0     X   NV8  0-3          0
+    GPU1    NV8   X   0-3          0
+    """
+    worker_affinities = topology_worker_affinities(
+        [0, 1], topology_text=shared_topology
+    )
+    assert sorted(worker_affinities[0] + worker_affinities[1]) == [0, 1, 2, 3]
+    assert set(worker_affinities[0]).isdisjoint(worker_affinities[1])
+    assert expand_gpu_workers([0, 2], 2) == [0, 0, 2, 2]
+    assert should_auto_cpu_affinity("", 2)
+    assert should_auto_cpu_affinity("auto", 1)
+    assert not should_auto_cpu_affinity("", 1)
+    with pytest.raises(ValueError):
+        expand_gpu_workers([0, 0], 1)
+    assert parse_worker_cpu_affinities("0-1;2,3", 2) == [[0, 1], [2, 3]]
+    with pytest.raises(ValueError, match="disjoint"):
+        parse_worker_cpu_affinities("0-1;1-2", 2)
+
+
+def test_async_actor_affinity_reserves_service_gpu_cores():
+    topology = """
+            GPU0 GPU1 GPU2 GPU3 CPU Affinity NUMA Affinity
+    GPU0     X   NV8  SYS  SYS  0-15  0
+    GPU1    NV8   X   SYS  SYS  0-15  0
+    GPU2    SYS  SYS   X   NV8  0-15  0
+    GPU3    SYS  SYS  NV8   X   0-15  0
+    """
+    actor = actor_worker_cpu_affinities(
+        [0, 1], 2, 3, 2, topology_text=topology
+    )
+    assert len(actor) == 4
+    actor_cpus = {cpu for group in actor for cpu in group}
+    assert actor_cpus == set(range(8))
+    assert actor_cpus.isdisjoint(range(8, 16))
+
+    subset = actor_worker_cpu_affinities(
+        [1], 0, 0, 2, topology_text=topology
+    )
+    subset_cpus = {cpu for group in subset for cpu in group}
+    assert subset_cpus == set(range(8, 16))
+    assert subset_cpus.isdisjoint(range(8))
+    assert minimum_persistent_round_games(1, 2, 1024, 128) == 4608
+
+
+def test_async_actor_loads_autotuned_profile(tmp_path):
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps({
+        "workers_per_gpu": 2,
+        "concurrent_games": 1024,
+        "shard_games": 128,
+        "batch_buckets": [1024],
+        "mcts_cpu_threads_per_gpu": 12,
+        "top_k": 96,
+    }), encoding="utf-8")
+    arguments = argparse.Namespace(search_profile="", search_profile_sha256="")
+    apply_actor_search_profile(arguments, path)
+    assert arguments.workers_per_gpu == 2
+    assert arguments.concurrent_games == 1024
+    assert arguments.selfplay_shard_games == 128
+    assert arguments.batch_buckets == "1024"
+    assert arguments.mcts_cpu_threads == 12
+    assert arguments.top_k == 96
+    assert arguments.search_profile_sha256
+
+
+def test_hardware_autotune_rejects_stale_cache(tmp_path):
+    request = {"checkpoint_sha256": "abc", "simulations": 400}
+    validate_or_write_request(tmp_path, request)
+    validate_or_write_request(tmp_path, dict(request))
+    with pytest.raises(ValueError, match="different request"):
+        validate_or_write_request(
+            tmp_path, {"checkpoint_sha256": "def", "simulations": 400}
+        )
+
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    (legacy / "quick-c128.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="no request manifest"):
+        validate_or_write_request(legacy, request)
+
+
+def test_capacity_autotune_selects_idle_homogeneous_gpus():
+    inventory = [
+        {"index": 0, "name": "TestGPU", "memory_used_mib": 4000, "utilization_percent": 90},
+        {"index": 1, "name": "TestGPU", "memory_used_mib": 0, "utilization_percent": 0},
+        {"index": 2, "name": "TestGPU", "memory_used_mib": 100, "utilization_percent": 2},
+    ]
+    assert select_gpu_ids(inventory, "", 2, True, 1024, 10) == [1, 2]
+    assert select_gpu_ids(inventory, "2,1", 2, False, 0, 0) == [2, 1]
+    ensure_gpus_idle(inventory, [1, 2], 1024, 10)
+    with pytest.raises(RuntimeError, match="became busy"):
+        ensure_gpus_idle(inventory, [0, 1], 1024, 10)
+    assert [default_contexts(item) for item in (1, 2, 3, 4)] == [
+        2048, 1024, 768, 512
+    ]
+    assert baseline_threads(96) == 24
+    assert baseline_threads(32) == 12
+    assert rounded_contexts(770) == 768
+    assert candidate_name({
+        "workers_per_gpu": 3,
+        "contexts": 768,
+        "mcts_cpu_threads": 12,
+    }) == "w3-c768-t12"
+    ranked = [
+        {"workers_per_gpu": 4, "contexts": 640},
+        {"workers_per_gpu": 4, "contexts": 512},
+        {"workers_per_gpu": 3, "contexts": 768},
+    ]
+    assert distinct_worker_candidates(ranked, 2) == [ranked[0], ranked[2]]
+    stage_one = [
+        {"workers_per_gpu": 4, "contexts": 512, "mcts_cpu_threads": 12},
+        {"workers_per_gpu": 3, "contexts": 768, "mcts_cpu_threads": 12},
+    ]
+    ranked_full = [
+        {"workers_per_gpu": 4, "contexts": 512, "mcts_cpu_threads": 24},
+        {"workers_per_gpu": 3, "contexts": 1024, "mcts_cpu_threads": 24},
+    ] + stage_one
+    assert full_validation_candidates(ranked_full, stage_one, 4) == ranked_full
+    assert interpolate_cumulative([(10.0, 0.0), (20.0, 100.0)], 15.0) == 50.0
+
+
+def test_exclusive_gpu_guard_detects_compute_processes(monkeypatch):
+    snapshot = parse_gpu_compute_processes(
+        "0, GPU-a\n1, GPU-b\n",
+        "GPU-b, 123\nGPU-b, 456\nGPU-missing, 789\n",
+    )
+    assert snapshot == {0: [], 1: [123, 456]}
+    monkeypatch.setattr(
+        "experiments.pair_native.async_loop.gpu_compute_processes",
+        lambda: snapshot,
+    )
+    require_idle_gpus([0], "actor")
+    with pytest.raises(RuntimeError, match="GPU.*1.*123"):
+        require_idle_gpus([0, 1], "gate")
+
+    assert descendant_pids(10, "11 10\n12 11\n20 99\n") == {10, 11, 12}
+    monkeypatch.setattr(
+        "experiments.pair_native.async_loop.descendant_pids",
+        lambda _root: {10, 11, 12},
+    )
+    monkeypatch.setattr(
+        "experiments.pair_native.async_loop.gpu_compute_processes",
+        lambda: {0: [11, 12], 1: [20]},
+    )
+    require_owned_gpus([0], 10, "actor")
+    with pytest.raises(RuntimeError, match="foreign.*1.*20"):
+        require_owned_gpus([0, 1], 10, "actor")
+    assert active_gpu_phases(True, True, False, [0, 1], 6, 7) == [
+        ("actor", [0, 1]),
+        ("learner", [6]),
+    ]
+
+
+def test_search_profile_is_bound_to_checkpoint_and_hardware(tmp_path):
+    checkpoint = tmp_path / "model.pth"
+    checkpoint.write_bytes(b"checkpoint")
+    profile = {
+        "checkpoint_sha256": sha256_file(checkpoint),
+        "hardware": {
+            "gpu_count": 1,
+            "gpu_name": "TestGPU",
+            "gpu_memory_mib": 49152,
+        },
+    }
+    hardware = {3: {"name": "TestGPU", "memory_total_mib": 49152}}
+    assert validate_actor_search_profile(
+        profile, checkpoint, [3], hardware_records=hardware
+    ) == []
+    mismatched = dict(profile) | {"checkpoint_sha256": "bad"}
+    with pytest.raises(ValueError, match="checkpoint_sha256"):
+        validate_actor_search_profile(
+            mismatched, checkpoint, [3], hardware_records=hardware
+        )
+    assert validate_actor_search_profile(
+        mismatched, checkpoint, [3], True, hardware
+    ) == ["checkpoint_sha256"]
 
 
 def test_dynamic_opening_temperature_controls_color_and_concentration():
@@ -1128,6 +1384,41 @@ def test_pair_mcts_finds_exact_two_stone_and_single_stone_wins(tmp_path):
     finally:
         pair_context.close()
         single_context.close()
+
+
+def test_pair_mcts_progressive_widening_native_smoke(tmp_path):
+    library_path = tmp_path / "libpair_mcts.so"
+    subprocess.run(
+        [
+            "g++", "-shared", "-fPIC", "-std=c++17", "-O2", "-fopenmp",
+            "experiments/pair_native/pair_mcts.cpp", "-o", str(library_path),
+        ],
+        check=True,
+    )
+    engine = PairMCTSEngine(
+        StaticPairEvaluator(top_k=96),
+        library_path=library_path,
+        top_k=96,
+        root_noise_epsilon=0.0,
+        progressive_widening_base=16,
+        progressive_widening_scale=2.5,
+        cpu_threads=4,
+    )
+    contexts = [engine.create_context(4400) for _ in range(2)]
+    try:
+        engine.run(contexts, 16)
+        openings = [context.choose_action(temperature=0.0) for context in contexts]
+        assert openings[0] == openings[1]
+        for context, action in zip(contexts, openings):
+            context.play(*action)
+        engine.run(contexts, 64)
+        actions = [context.choose_action(temperature=0.0) for context in contexts]
+        assert actions[0] == actions[1]
+        assert 0 <= actions[0][0] < actions[0][1] < 361
+        assert all(context.stats()["simulations"] == 64 for context in contexts)
+    finally:
+        for context in contexts:
+            context.close()
 
 
 def test_pair_mcts_openmp_preserves_deterministic_trace(tmp_path):

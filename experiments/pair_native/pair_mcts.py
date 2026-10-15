@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import math
 import os
 import subprocess
 from pathlib import Path
@@ -62,6 +63,11 @@ def load_library(path: str | os.PathLike | None = None):
     ]
     library.pair_mcts_set_random_candidates.argtypes = [ctypes.c_int]
     library.pair_mcts_set_cpu_threads.argtypes = [ctypes.c_int]
+    if hasattr(library, "pair_mcts_set_progressive_widening"):
+        library.pair_mcts_set_progressive_widening.argtypes = [
+            ctypes.c_int,
+            ctypes.c_float,
+        ]
     library.pair_mcts_create_context.argtypes = [ctypes.c_uint32]
     library.pair_mcts_create_context.restype = ctypes.c_void_p
     library.pair_mcts_destroy_context.argtypes = [ctypes.c_void_p]
@@ -71,6 +77,9 @@ def load_library(path: str | os.PathLike | None = None):
         ctypes.c_int,
     ]
     library.pair_mcts_run_multi.restype = ctypes.c_int
+    if hasattr(library, "pair_mcts_run_multi_async"):
+        library.pair_mcts_run_multi_async.argtypes = library.pair_mcts_run_multi.argtypes
+        library.pair_mcts_run_multi_async.restype = ctypes.c_int
     library.pair_mcts_choose_action.argtypes = [
         ctypes.c_void_p,
         ctypes.c_float,
@@ -153,6 +162,99 @@ class PairTopKInference(torch.nn.Module):
         return first, second, priors, values
 
 
+class HierarchicalPairInference(torch.nn.Module):
+    """Compile V4 forward and two-stage Pair proposal into one GPU graph."""
+
+    def __init__(
+        self,
+        model,
+        first_candidates: int,
+        seconds_per_first: int,
+        candidate_gumbel: float = 0.0,
+    ):
+        super().__init__()
+        self.model = model
+        self.first_candidates = int(first_candidates)
+        self.seconds_per_first = int(seconds_per_first)
+        self.candidate_count = self.first_candidates * self.seconds_per_first
+        self.candidate_gumbel = float(candidate_gumbel)
+
+    def forward(
+        self,
+        features: torch.Tensor,
+        first_gumbel: torch.Tensor | None = None,
+        row_gumbel: torch.Tensor | None = None,
+    ):
+        unary, pair_embeddings, values, occupied = self.model(features)
+        first_logits = unary.masked_fill(occupied, torch.finfo(unary.dtype).min)
+        opening = occupied.sum(dim=1).eq(0)
+        selection_logits = first_logits
+        if self.candidate_gumbel > 0.0:
+            selection_logits = first_logits + self.candidate_gumbel * first_gumbel.to(
+                first_logits.dtype
+            )
+            selection_logits = torch.where(
+                opening[:, None],
+                first_logits,
+                selection_logits,
+            )
+        _, selected_first = torch.topk(
+            selection_logits,
+            k=self.first_candidates,
+            dim=1,
+        )
+        row_scores = self.model.pair_row_scores(
+            unary,
+            pair_embeddings,
+            occupied,
+            selected_first,
+        )
+        selected_mask = torch.zeros_like(occupied)
+        selected_mask.scatter_(1, selected_first, True)
+        seconds = torch.arange(BOARD_POINTS, device=features.device)
+        duplicate_orientation = (
+            selected_mask[:, None, :]
+            & seconds[None, None, :].lt(selected_first[:, :, None])
+        )
+        row_scores = row_scores.masked_fill(
+            duplicate_orientation,
+            torch.finfo(row_scores.dtype).min,
+        )
+        if self.candidate_gumbel > 0.0:
+            row_scores = row_scores + self.candidate_gumbel * row_gumbel.to(
+                row_scores.dtype
+            )
+        row_score, second = torch.topk(
+            row_scores,
+            k=self.seconds_per_first,
+            dim=2,
+        )
+        first = selected_first[:, :, None].expand_as(second).flatten(1)
+        second = second.flatten(1)
+        pair_score = row_score.flatten(1)
+        canonical_first = torch.minimum(first, second)
+        second = torch.maximum(first, second)
+        first = canonical_first
+        pair_score, order = torch.sort(pair_score, dim=1, descending=True)
+        first = first.gather(1, order)
+        second = second.gather(1, order)
+
+        opening_score, opening_moves = torch.topk(
+            first_logits,
+            k=self.candidate_count,
+            dim=1,
+        )
+        first = torch.where(opening[:, None], opening_moves, first)
+        second = torch.where(
+            opening[:, None],
+            torch.full_like(second, PASS_MOVE),
+            second,
+        )
+        pair_score = torch.where(opening[:, None], opening_score, pair_score)
+        priors = torch.softmax(pair_score.float(), dim=1)
+        return first, second, priors, values
+
+
 class TorchPairEvaluator:
     def __init__(
         self,
@@ -167,15 +269,48 @@ class TorchPairEvaluator:
         pad_batch_to: int = 0,
         batch_buckets: tuple[int, ...] | list[int] = (),
         value_scale: float = 1.0,
+        hierarchical_first_candidates: int = 0,
+        hierarchical_seconds_per_first: int = 0,
     ):
         self.model = model.eval().to(device)
+        self.compiled = bool(compile_model)
+        self.hierarchical_first_candidates = int(hierarchical_first_candidates)
+        self.hierarchical_seconds_per_first = int(hierarchical_seconds_per_first)
+        self.hierarchical = bool(
+            self.hierarchical_first_candidates
+            or self.hierarchical_seconds_per_first
+        )
+        if self.hierarchical:
+            if min(
+                self.hierarchical_first_candidates,
+                self.hierarchical_seconds_per_first,
+            ) <= 0:
+                raise ValueError("both hierarchical candidate sizes must be positive")
+            if (
+                self.hierarchical_first_candidates
+                * self.hierarchical_seconds_per_first
+                != int(top_k)
+            ):
+                raise ValueError("top_k must equal first_candidates * seconds_per_first")
+            if not hasattr(self.model, "pair_row_scores"):
+                raise TypeError("hierarchical Pair evaluation requires pair_row_scores")
         self.inference = None
-        if compile_model and candidate_gumbel <= 0:
-            self.inference = torch.compile(
-                PairTopKInference(self.model, top_k).eval(),
-                fullgraph=True,
-                mode="reduce-overhead",
+        self.inference_uses_noise = False
+        if compile_model and (candidate_gumbel <= 0 or self.hierarchical):
+            inference = (
+                HierarchicalPairInference(
+                    self.model,
+                    self.hierarchical_first_candidates,
+                    self.hierarchical_seconds_per_first,
+                    candidate_gumbel,
+                )
+                if self.hierarchical
+                else PairTopKInference(self.model, top_k)
             )
+            self.inference = torch.compile(
+                inference.eval(), fullgraph=True, mode="reduce-overhead"
+            )
+            self.inference_uses_noise = self.hierarchical and candidate_gumbel > 0
         elif compile_model:
             self.model = torch.compile(
                 self.model,
@@ -201,6 +336,28 @@ class TorchPairEvaluator:
         self.generator.manual_seed(seed)
         self.last_error: Exception | None = None
         self.callback = EVAL_CALLBACK(self._callback)
+
+    def warmup(self, batch_size: int = 128) -> None:
+        """Compile the configured inference graph before timed search."""
+        if self.inference is None:
+            return
+        batch_size = max(1, int(batch_size))
+        features = torch.zeros(
+            (batch_size, 5, 19, 19), device=self.device, dtype=torch.float32
+        )
+        with torch.inference_mode(), torch.autocast(
+            device_type="cuda", dtype=self.dtype
+        ):
+            if self.inference_uses_noise:
+                first_gumbel = self._gumbel((batch_size, BOARD_POINTS))
+                row_gumbel = self._gumbel((
+                    batch_size,
+                    self.hierarchical_first_candidates,
+                    BOARD_POINTS,
+                ))
+                self.inference(features, first_gumbel, row_gumbel)
+            else:
+                self.inference(features)
 
     def _features(self, boards: torch.Tensor, players: torch.Tensor) -> torch.Tensor:
         board = boards.reshape(-1, 19, 19)
@@ -276,7 +433,18 @@ class TorchPairEvaluator:
                 dtype=self.dtype,
             ):
                 if self.inference is not None:
-                    first, second, priors, values = self.inference(features)
+                    if self.inference_uses_noise:
+                        first_gumbel = self._gumbel((features.shape[0], BOARD_POINTS))
+                        row_gumbel = self._gumbel((
+                            features.shape[0],
+                            self.hierarchical_first_candidates,
+                            BOARD_POINTS,
+                        ))
+                        first, second, priors, values = self.inference(
+                            features, first_gumbel, row_gumbel
+                        )
+                    else:
+                        first, second, priors, values = self.inference(features)
                 else:
                     unary, pair_embeddings, values, occupied = self.model(features)
                     opening = occupied.sum(dim=1).eq(0)
@@ -293,29 +461,80 @@ class TorchPairEvaluator:
                         second = torch.full_like(first, PASS_MOVE)
                     else:
                         score_model = getattr(self.model, "_orig_mod", self.model)
-                        pair_scores = score_model.pair_scores(
-                            unary,
-                            pair_embeddings,
-                            occupied,
-                        )
-                        if self.candidate_gumbel > 0:
-                            uniform = torch.rand(
-                                pair_scores.shape,
-                                device=self.device,
-                                dtype=torch.float32,
-                                generator=self.generator,
-                            ).clamp_(1.0e-6, 1.0 - 1.0e-6)
-                            gumbel = -torch.log(-torch.log(uniform))
-                            pair_scores = pair_scores + self.candidate_gumbel * gumbel.to(
-                                pair_scores.dtype
+                        if self.hierarchical:
+                            first_logits = unary.masked_fill(
+                                occupied,
+                                torch.finfo(unary.dtype).min,
                             )
-                        pair_score, flat_pair = torch.topk(
-                            pair_scores.flatten(1),
-                            k=self.top_k,
-                            dim=1,
-                        )
-                        first = flat_pair.div(BOARD_POINTS, rounding_mode="floor")
-                        second = flat_pair % BOARD_POINTS
+                            if self.candidate_gumbel > 0:
+                                first_logits = first_logits + self.candidate_gumbel * self._gumbel(
+                                    first_logits.shape
+                                ).to(first_logits.dtype)
+                            _, selected_first = torch.topk(
+                                first_logits,
+                                k=self.hierarchical_first_candidates,
+                                dim=1,
+                            )
+                            row_scores = score_model.pair_row_scores(
+                                unary,
+                                pair_embeddings,
+                                occupied,
+                                selected_first,
+                            )
+                            # An unordered Pair can be proposed from either endpoint.
+                            # Keep one orientation without imposing an index bias when
+                            # only one endpoint survived the first-stage selection.
+                            selected_mask = torch.zeros_like(occupied)
+                            selected_mask.scatter_(1, selected_first, True)
+                            seconds = torch.arange(BOARD_POINTS, device=self.device)
+                            duplicate_orientation = (
+                                selected_mask[:, None, :]
+                                & seconds[None, None, :].lt(selected_first[:, :, None])
+                            )
+                            row_scores = row_scores.masked_fill(
+                                duplicate_orientation,
+                                torch.finfo(row_scores.dtype).min,
+                            )
+                            if self.candidate_gumbel > 0:
+                                row_scores = row_scores + self.candidate_gumbel * self._gumbel(
+                                    row_scores.shape
+                                ).to(row_scores.dtype)
+                            row_score, second = torch.topk(
+                                row_scores,
+                                k=self.hierarchical_seconds_per_first,
+                                dim=2,
+                            )
+                            first = selected_first[:, :, None].expand_as(second)
+                            pair_score = row_score.flatten(1)
+                            first = first.flatten(1)
+                            second = second.flatten(1)
+                            canonical_first = torch.minimum(first, second)
+                            second = torch.maximum(first, second)
+                            first = canonical_first
+                            pair_score, order = torch.sort(
+                                pair_score,
+                                dim=1,
+                                descending=True,
+                            )
+                            first = first.gather(1, order)
+                            second = second.gather(1, order)
+                        else:
+                            pair_scores = score_model.pair_scores(
+                                unary,
+                                pair_embeddings,
+                                occupied,
+                            )
+                            if self.candidate_gumbel > 0:
+                                pair_scores = pair_scores + self.candidate_gumbel * self._gumbel(
+                                    pair_scores.shape
+                                ).to(pair_scores.dtype)
+                            pair_score, flat_pair = torch.topk(
+                                pair_scores.flatten(1),
+                                k=self.top_k,
+                                dim=1,
+                            )
+                            first = flat_pair.div(BOARD_POINTS, rounding_mode="floor")
+                            second = flat_pair % BOARD_POINTS
                         if opening.any():
                             opening_logits = unary.masked_fill(
                                 occupied,
@@ -385,6 +604,15 @@ class TorchPairEvaluator:
             self.last_error = error
             return 1
 
+    def _gumbel(self, shape: torch.Size | tuple[int, ...]) -> torch.Tensor:
+        uniform = torch.rand(
+            shape,
+            device=self.device,
+            dtype=torch.float32,
+            generator=self.generator,
+        ).clamp_(1.0e-6, 1.0 - 1.0e-6)
+        return -torch.log(-torch.log(uniform))
+
     def stats(self) -> dict[str, int | float]:
         return {
             "requested_positions": self.requested_positions,
@@ -395,6 +623,7 @@ class TorchPairEvaluator:
                 else 0.0
             ),
             "eval_batches": self.eval_batches,
+            "hierarchical": self.hierarchical,
         }
 
 
@@ -497,10 +726,33 @@ class PairMCTSEngine:
         root_dirichlet_alpha: float = 0.15,
         random_candidates: int = 0,
         cpu_threads: int = 1,
+        progressive_widening_base: int = 0,
+        progressive_widening_scale: float = 0.0,
+        async_pipeline: bool = False,
     ):
+        if (
+            progressive_widening_base < 0
+            or progressive_widening_base > top_k
+            or not math.isfinite(progressive_widening_scale)
+            or progressive_widening_scale < 0
+            or bool(progressive_widening_base) != bool(progressive_widening_scale)
+        ):
+            raise ValueError(
+                "progressive widening base and scale must both be zero or positive"
+            )
         self.library = load_library(library_path)
         self.evaluator = evaluator
         self.top_k = int(top_k)
+        self.async_pipeline = bool(async_pipeline)
+        if self.async_pipeline and getattr(evaluator, "compiled", False):
+            raise ValueError(
+                "async_pipeline is incompatible with torch.compile callbacks; "
+                "use --no-compile-model"
+            )
+        if self.async_pipeline and not hasattr(
+            self.library, "pair_mcts_run_multi_async"
+        ):
+            raise RuntimeError("selected Pair MCTS library has no async pipeline")
         self.library.pair_mcts_set_eval_callback(evaluator.callback)
         self.library.pair_mcts_set_params(
             self.top_k,
@@ -510,6 +762,17 @@ class PairMCTSEngine:
         )
         self.library.pair_mcts_set_random_candidates(int(random_candidates))
         self.library.pair_mcts_set_cpu_threads(int(cpu_threads))
+        widening = getattr(self.library, "pair_mcts_set_progressive_widening", None)
+        if widening is None:
+            if progressive_widening_base or progressive_widening_scale:
+                raise RuntimeError(
+                    "the selected Pair MCTS library does not support progressive widening"
+                )
+        else:
+            widening(
+                int(progressive_widening_base),
+                float(progressive_widening_scale),
+            )
 
     def create_context(self, seed: int) -> PairMCTSContext:
         return PairMCTSContext(self, seed)
@@ -527,7 +790,12 @@ class PairMCTSEngine:
             *(context.handle.value for context in contexts)
         )
         budget_array = (ctypes.c_int * len(contexts))(*(int(value) for value in budgets))
-        status = self.library.pair_mcts_run_multi(handles, budget_array, len(contexts))
+        runner = (
+            self.library.pair_mcts_run_multi_async
+            if self.async_pipeline
+            else self.library.pair_mcts_run_multi
+        )
+        status = runner(handles, budget_array, len(contexts))
         if status != 0:
             if getattr(self.evaluator, "last_error", None) is not None:
                 error = self.evaluator.last_error

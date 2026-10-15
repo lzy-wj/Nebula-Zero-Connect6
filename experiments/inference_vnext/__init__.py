@@ -1,1 +1,1 @@
-"""A800 inference-first architecture experiments."""
+"""Inference-first architecture experiments."""

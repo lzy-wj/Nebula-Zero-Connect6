@@ -237,7 +237,7 @@ def environment_parts(values):
 
 
 def ensure_remote_engine(host, remote_root, local_weight):
-    """仅当 best.pth 改变时原子替换 H20 专用 TensorRT 引擎。"""
+    """仅当 best.pth 改变时原子替换远端 TensorRT 引擎。"""
     checkpoint_dir = os.path.join(remote_root, 'reinforcement_learning', 'checkpoints')
     remote_weight = os.path.join(checkpoint_dir, 'best.pth')
     remote_engine = os.path.join(checkpoint_dir, 'current_model.engine')
@@ -248,7 +248,7 @@ def ensure_remote_engine(host, remote_root, local_weight):
         f"test -f {shlex.quote(marker_path)} && cat {shlex.quote(marker_path)} || true",
     )
     if marker == local_digest and remote_file_exists(host, remote_engine):
-        print('远端 H20 引擎已对应当前 incumbent，跳过重建。', flush=True)
+        print('远端引擎已对应当前 incumbent，跳过重建。', flush=True)
         return remote_engine, False
 
     atomic_push(host, local_weight, remote_weight)

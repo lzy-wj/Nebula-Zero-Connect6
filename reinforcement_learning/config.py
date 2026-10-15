@@ -83,7 +83,7 @@ MCTS_WIDENING_SCALE = float(os.environ.get('NEBULA_MCTS_WIDENING_SCALE', '0.25')
 MCTS_DETERMINISTIC_SELECTION = (
     os.environ.get('NEBULA_MCTS_DETERMINISTIC_SELECTION', '0') == '1'
 )
-GPUS = os.environ.get('NEBULA_SELFPLAY_GPUS', '6,7')
+GPUS = os.environ.get('NEBULA_SELFPLAY_GPUS', '0')
 SIMULATIONS = int(os.environ.get('NEBULA_SIMULATIONS', '1200'))
 SIMULATIONS_BLACK = int(os.environ.get('NEBULA_SIMULATIONS_BLACK', '400'))
 SIMULATIONS_WHITE = int(os.environ.get('NEBULA_SIMULATIONS_WHITE', '1200'))
@@ -96,17 +96,25 @@ SELFPLAY_BACKEND = os.environ.get('NEBULA_SELFPLAY_BACKEND', 'local').lower()
 REMOTE_SELFPLAY_HOST = os.environ.get('NEBULA_REMOTE_SELFPLAY_HOST', '')
 REMOTE_PROJECT_DIR = os.environ.get('NEBULA_REMOTE_PROJECT_DIR', '')
 REMOTE_PYTHON = os.environ.get('NEBULA_REMOTE_PYTHON', 'python')
-# H20 实测最优生产点：四卡各一个 worker，46 线程时固定搜索吞吐约
-# 115k simulations/s；40 局换色对照与 24 线程打平，同时单次搜索快约 9%。
-REMOTE_SELFPLAY_GPUS = os.environ.get('NEBULA_REMOTE_SELFPLAY_GPUS', '0,1,2,3')
-REMOTE_NUM_WORKERS = int(os.environ.get('NEBULA_REMOTE_NUM_WORKERS', '4'))
-REMOTE_MCTS_THREADS = int(os.environ.get('NEBULA_REMOTE_MCTS_THREADS', '46'))
+REMOTE_SELFPLAY_GPUS = os.environ.get('NEBULA_REMOTE_SELFPLAY_GPUS', '0')
+REMOTE_NUM_WORKERS = int(os.environ.get(
+    'NEBULA_REMOTE_NUM_WORKERS',
+    str(len([gpu for gpu in REMOTE_SELFPLAY_GPUS.split(',') if gpu.strip()])),
+))
+REMOTE_MCTS_THREADS = int(os.environ.get(
+    'NEBULA_REMOTE_MCTS_THREADS',
+    str(min(24, os.cpu_count() or 1)),
+))
 REMOTE_MCTS_BATCH_SIZE = int(os.environ.get('NEBULA_REMOTE_MCTS_BATCH_SIZE', '64'))
 REMOTE_MCTS_CONCURRENT_GAMES = int(
     os.environ.get('NEBULA_REMOTE_MCTS_CONCURRENT_GAMES', str(MCTS_CONCURRENT_GAMES))
 )
-REMOTE_CPUSET = os.environ.get('NEBULA_REMOTE_CPUSET', '0-183')
-REMOTE_BUILD_CPUSET = os.environ.get('NEBULA_REMOTE_BUILD_CPUSET', '0-7')
+_CPU_COUNT = os.cpu_count() or 1
+REMOTE_CPUSET = os.environ.get('NEBULA_REMOTE_CPUSET', f'0-{_CPU_COUNT - 1}')
+REMOTE_BUILD_CPUSET = os.environ.get(
+    'NEBULA_REMOTE_BUILD_CPUSET',
+    f'0-{min(8, _CPU_COUNT) - 1}',
+)
 REMOTE_BUILD_GPU = os.environ.get('NEBULA_REMOTE_BUILD_GPU', '0')
 REMOTE_SYNC_CODE = os.environ.get('NEBULA_REMOTE_SYNC_CODE', '1') == '1'
 REMOTE_SSH_CONTROL_PATH = os.environ.get(

@@ -1,4 +1,4 @@
-"""ctypes bridge and H20 evaluator for the isolated native-Pair MCTS."""
+"""ctypes bridge and batched evaluator for the isolated native-Pair MCTS."""
 
 from __future__ import annotations
 

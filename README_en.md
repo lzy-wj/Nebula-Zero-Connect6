@@ -15,8 +15,8 @@ trains directly through self-play.
 | Version | Main change | Measured result |
 | --- | --- | --- |
 | V1 · Competition | 11.80M-parameter C6TransNet, per-stone policy, C++ MCTS | Contest build and later experimental baseline; the public training record reaches generation 801 |
-| V2 · Inference-first | TensorRT, batching, CUDA Graphs, and candidate-network work | 2.16× faster inference and about 1.89× faster two-GPU self-play; the 1200-simulation gate was 49–51, so it was not promoted |
-| V3 · Pair-native | Native unordered pairs, 1.65M sparse network, Top-64 MCTS, asynchronous multi-GPU | 86.0% fewer parameters than V1; 77.34% paired score against V1 `best` at 400 simulations |
+| V2 · Inference-first | TensorRT, batching, CUDA Graphs, and candidate-network work | The candidate gate was 49–51, so it was not promoted |
+| V3 · Pair-native | Native unordered pairs, 1.65M sparse network, Top-64 MCTS, asynchronous self-play | 86.0% fewer parameters than V1; 77.34% paired score against V1 `best` at 400 simulations |
 
 V2 improved speed but did not demonstrate higher playing strength. V3 did not inherit its
 weights; it restarted in a native Pair action space. The strength comparison is therefore
@@ -33,16 +33,14 @@ The `through-88` milestone used 64 common openings with color reversal, for 128 
 
 V1 searches once for each of the two stones in a normal turn, so equal nominal budgets give
 it about twice V3's simulation count. The public model is the later `through-452` snapshot;
-see [RESULTS](experiments/pair_native/RESULTS.md#final-100-round-model-versus-historical-baselines)
-for the complete match results.
+see the [evidence record](docs/THREE_GENERATION_EVIDENCE.md) for the aggregation rules.
 
 ## Training scale
 
 - V1: the public training record reaches generation 801; complete historical training time was not archived.
-- V2: 13,200 games on two A800s in about 18.5 minutes; complete fine-tuning time was not archived.
+- V2: candidate architectures, deployment, and self-play were validated, but the strength gate failed.
 - V3: the continuation segment containing `through-452` generated 1,133,440 games, including
-  seven quality retries. Active actor, learner, and gate phases totaled 110.5 hours and at
-  least 464.4 GPU-hours after weighting by the actual GPU count.
+  seven quality retries.
 
 The public V3 replay is the exact 12-generation window consumed by the model: 29,568 games
 and 1,713,854 turn samples. See the [evidence record](docs/THREE_GENERATION_EVIDENCE.md) for
@@ -57,13 +55,8 @@ action directly instead of splitting a turn into two independent decisions.
 | --- | --- |
 | Network | 1,651,035 parameters; sparse-token trunk and symmetric pair head |
 | Search | native-pair C++ MCTS; Top-64; 400–1200 simulations per complete turn |
-| Training | random initialization; Parquet replay; candidate gating; asynchronous 1/2/4/8-GPU profiles |
+| Training | random initialization; Parquet replay; candidate gating; scalable asynchronous actors |
 | Release | `through-452` model, exact replay window, configs, manifests, and SHA256 files |
-
-In the controlled 64-simulation engineering benchmark, stored-turn throughput rose from
-425.8 turns/s on the early four-GPU implementation to 1,145.5 turns/s after optimization;
-the six-GPU result was 1,644.0 turns/s. Production training uses 400–1200 simulations, so its
-speed is not directly comparable to this benchmark.
 
 ## Quick start
 

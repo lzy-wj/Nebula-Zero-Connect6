@@ -316,6 +316,12 @@ def load_checkpoint(path: str | Path, map_location="cpu"):
         map_location=map_location,
         weights_only=False,
     )
-    model = build_model(checkpoint["model_config"])
+    config = checkpoint["model_config"]
+    if config.get("variant") in {"dense", "moe"}:
+        from experiments.nebula_v4.model import build_model as build_v4_model
+
+        model = build_v4_model(config)
+    else:
+        model = build_model(config)
     model.load_state_dict(checkpoint["model_state_dict"])
     return model, checkpoint
